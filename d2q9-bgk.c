@@ -426,11 +426,12 @@ int collision(const t_param params,
   {
     int row = jj * nx;
 
+    #pragma omp simd
     for (int ii = 0; ii < nx; ii++)
     {
       int idx = row + ii;
 
-      if (obstacles[idx]) continue;
+      float m = (float)(!obstacles[idx]);
 
       // Load distributions
       float s0 = tmp_cells->speeds[0][idx];
@@ -480,15 +481,15 @@ int collision(const t_param params,
       float feq8 = w2 * rho * (common + inv_c_sq * uxy + inv_2_c_sq_sq * uxy * uxy);
 
       // Relaxation (BGK)
-      cells->speeds[0][idx] = s0 + omega * (feq0 - s0);
-      cells->speeds[1][idx] = s1 + omega * (feq1 - s1);
-      cells->speeds[2][idx] = s2 + omega * (feq2 - s2);
-      cells->speeds[3][idx] = s3 + omega * (feq3 - s3);
-      cells->speeds[4][idx] = s4 + omega * (feq4 - s4);
-      cells->speeds[5][idx] = s5 + omega * (feq5 - s5);
-      cells->speeds[6][idx] = s6 + omega * (feq6 - s6);
-      cells->speeds[7][idx] = s7 + omega * (feq7 - s7);
-      cells->speeds[8][idx] = s8 + omega * (feq8 - s8);
+      cells->speeds[0][idx] = s0 + m * omega * (feq0 - s0);
+      cells->speeds[1][idx] = s1 + m * omega * (feq1 - s1);
+      cells->speeds[2][idx] = s2 + m * omega * (feq2 - s2);
+      cells->speeds[3][idx] = s3 + m * omega * (feq3 - s3);
+      cells->speeds[4][idx] = s4 + m * omega * (feq4 - s4);
+      cells->speeds[5][idx] = s5 + m * omega * (feq5 - s5);
+      cells->speeds[6][idx] = s6 + m * omega * (feq6 - s6);
+      cells->speeds[7][idx] = s7 + m * omega * (feq7 - s7);
+      cells->speeds[8][idx] = s8 + m * omega * (feq8 - s8);
     }
   }
 

@@ -3,7 +3,7 @@
 EXE=d2q9-bgk
 
 CC=gcc
-CFLAGS= -std=c99 -fopenmp -pg -Wall -O3 -ffast-math -march=native -funroll-loops
+CFLAGS= -std=c99 -pg -fopenmp -Wall -O3 -ffast-math -march=native -funroll-loops -fopt-info-vec-optimized -fopt-info-vec-missed
 LIBS = -lm
 
 FINAL_STATE_FILE=./final_state.dat
