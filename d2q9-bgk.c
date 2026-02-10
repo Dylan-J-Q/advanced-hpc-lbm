@@ -94,7 +94,26 @@ int initialise(const char* paramfile, const char* obstaclefile,
 */
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
-int propagate(const t_param params, t_speed* cells, t_speed* tmp_cells);
+int propagate(const t_param params,
+              const float * restrict c0,
+              const float * restrict c1,
+              const float * restrict c2,
+              const float * restrict c3,
+              const float * restrict c4,
+              const float * restrict c5,
+              const float * restrict c6,
+              const float * restrict c7,
+              const float * restrict c8,
+              float * restrict t0,
+              float * restrict t1,
+              float * restrict t2,
+              float * restrict t3,
+              float * restrict t4,
+              float * restrict t5,
+              float * restrict t6,
+              float * restrict t7,
+              float * restrict t8);
+
 int rebound(const t_param params,
             float * restrict c0,
             float * restrict c1,
@@ -248,7 +267,12 @@ int main(int argc, char* argv[])
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles)
 {
   accelerate_flow(params, cells, obstacles);
-  propagate(params, cells, tmp_cells);
+  propagate(params, cells->speeds[0], cells->speeds[1], cells->speeds[2],
+          cells->speeds[3], cells->speeds[4], cells->speeds[5],
+          cells->speeds[6], cells->speeds[7], cells->speeds[8],
+          tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
+          tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
+          tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8]);
   rebound(params,
           cells->speeds[0], cells->speeds[1], cells->speeds[2],
           cells->speeds[3], cells->speeds[4], cells->speeds[5],
@@ -310,138 +334,163 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
 }
 
 int propagate(const t_param params,
-              t_speed * restrict cells,
-              t_speed * restrict tmp_cells)
+              const float * restrict c0,
+              const float * restrict c1,
+              const float * restrict c2,
+              const float * restrict c3,
+              const float * restrict c4,
+              const float * restrict c5,
+              const float * restrict c6,
+              const float * restrict c7,
+              const float * restrict c8,
+              float * restrict t0,
+              float * restrict t1,
+              float * restrict t2,
+              float * restrict t3,
+              float * restrict t4,
+              float * restrict t5,
+              float * restrict t6,
+              float * restrict t7,
+              float * restrict t8)
 {
-  const int nx = params.nx;
-  const int ny = params.ny;
+    const int nx = params.nx;
+    const int ny = params.ny;
 
-  //interior
-  for (int jj = 1; jj < ny - 1; jj++)
-  {
-    const int row       = jj * nx;
-    const int row_north = (jj + 1) * nx;
-    const int row_south = (jj - 1) * nx;
-
-    #pragma omp simd
-    for (int ii = 1; ii < nx - 1; ii++)
+    /* =======================
+       Interior cells
+       ======================= */
+    for (int jj = 1; jj < ny - 1; ++jj)
     {
-      int idx = row + ii;
+        const int row       = jj * nx;
+        const int row_north = (jj + 1) * nx;
+        const int row_south = (jj - 1) * nx;
 
-      tmp_cells->speeds[0][idx] = cells->speeds[0][idx];
+        #pragma omp simd
+        for (int ii = 1; ii < nx - 1; ++ii)
+        {
+            const int idx = row + ii;
 
-      tmp_cells->speeds[1][idx] = cells->speeds[1][idx - 1];
-      tmp_cells->speeds[2][idx] = cells->speeds[2][row_south + ii];
-      tmp_cells->speeds[3][idx] = cells->speeds[3][idx + 1];
-      tmp_cells->speeds[4][idx] = cells->speeds[4][row_north + ii];
+            t0[idx] = c0[idx];
 
-      tmp_cells->speeds[5][idx] = cells->speeds[5][row_south + ii - 1];
-      tmp_cells->speeds[6][idx] = cells->speeds[6][row_south + ii + 1];
-      tmp_cells->speeds[7][idx] = cells->speeds[7][row_north + ii + 1];
-      tmp_cells->speeds[8][idx] = cells->speeds[8][row_north + ii - 1];
-    }
-  }
+            t1[idx] = c1[idx - 1];
+            t2[idx] = c2[row_south + ii];
+            t3[idx] = c3[idx + 1];
+            t4[idx] = c4[row_north + ii];
 
-  //top row
-  {
-    int row       = 0;
-    int row_north = nx;
-    int row_south = (ny - 1) * nx;
-
-    for (int ii = 0; ii < nx; ii++)
-    {
-      int ii_w = (ii == 0)     ? nx - 1 : ii - 1;
-      int ii_e = (ii == nx-1)  ? 0      : ii + 1;
-      int idx  = row + ii;
-
-      tmp_cells->speeds[0][idx] = cells->speeds[0][idx];
-
-      tmp_cells->speeds[1][idx] = cells->speeds[1][row + ii_w];
-      tmp_cells->speeds[2][idx] = cells->speeds[2][row_south + ii];
-      tmp_cells->speeds[3][idx] = cells->speeds[3][row + ii_e];
-      tmp_cells->speeds[4][idx] = cells->speeds[4][row_north + ii];
-
-      tmp_cells->speeds[5][idx] = cells->speeds[5][row_south + ii_w];
-      tmp_cells->speeds[6][idx] = cells->speeds[6][row_south + ii_e];
-      tmp_cells->speeds[7][idx] = cells->speeds[7][row_north + ii_e];
-      tmp_cells->speeds[8][idx] = cells->speeds[8][row_north + ii_w];
-    }
-  }
-
-  //bottom row
-  {
-    int jj = ny - 1;
-    int row       = jj * nx;
-    int row_north = 0;
-    int row_south = (jj - 1) * nx;
-
-    for (int ii = 0; ii < nx; ii++)
-    {
-      int ii_w = (ii == 0)     ? nx - 1 : ii - 1;
-      int ii_e = (ii == nx-1)  ? 0      : ii + 1;
-      int idx  = row + ii;
-
-      tmp_cells->speeds[0][idx] = cells->speeds[0][idx];
-
-      tmp_cells->speeds[1][idx] = cells->speeds[1][row + ii_w];
-      tmp_cells->speeds[2][idx] = cells->speeds[2][row_south + ii];
-      tmp_cells->speeds[3][idx] = cells->speeds[3][row + ii_e];
-      tmp_cells->speeds[4][idx] = cells->speeds[4][row_north + ii];
-
-      tmp_cells->speeds[5][idx] = cells->speeds[5][row_south + ii_w];
-      tmp_cells->speeds[6][idx] = cells->speeds[6][row_south + ii_e];
-      tmp_cells->speeds[7][idx] = cells->speeds[7][row_north + ii_e];
-      tmp_cells->speeds[8][idx] = cells->speeds[8][row_north + ii_w];
-    }
-  }
-
-
-  for (int jj = 1; jj < ny - 1; jj++)
-  {
-    int row       = jj * nx;
-    int row_north = (jj + 1) * nx;
-    int row_south = (jj - 1) * nx;
-
-    // left column
-    {
-      int ii_w = nx - 1;
-      int ii_e = 1;
-      int idx = row;
-
-      tmp_cells->speeds[0][idx] = cells->speeds[0][idx];
-      tmp_cells->speeds[1][idx] = cells->speeds[1][row + ii_w];
-      tmp_cells->speeds[2][idx] = cells->speeds[2][row_south];
-      tmp_cells->speeds[3][idx] = cells->speeds[3][row + ii_e];
-      tmp_cells->speeds[4][idx] = cells->speeds[4][row_north];
-
-      tmp_cells->speeds[5][idx] = cells->speeds[5][row_south + ii_w];
-      tmp_cells->speeds[6][idx] = cells->speeds[6][row_south + ii_e];
-      tmp_cells->speeds[7][idx] = cells->speeds[7][row_north + ii_e];
-      tmp_cells->speeds[8][idx] = cells->speeds[8][row_north + ii_w];
+            t5[idx] = c5[row_south + ii - 1];
+            t6[idx] = c6[row_south + ii + 1];
+            t7[idx] = c7[row_north + ii + 1];
+            t8[idx] = c8[row_north + ii - 1];
+        }
     }
 
-    // right column
+    /* =======================
+       Top row
+       ======================= */
     {
-      int ii = nx - 1;
-      int ii_w = ii - 1;
-      int ii_e = 0;
-      int idx = row + ii;
+        const int row       = 0;
+        const int row_north = nx;
+        const int row_south = (ny - 1) * nx;
 
-      tmp_cells->speeds[0][idx] = cells->speeds[0][idx];
-      tmp_cells->speeds[1][idx] = cells->speeds[1][row + ii_w];
-      tmp_cells->speeds[2][idx] = cells->speeds[2][row_south + ii];
-      tmp_cells->speeds[3][idx] = cells->speeds[3][row + ii_e];
-      tmp_cells->speeds[4][idx] = cells->speeds[4][row_north + ii];
+        for (int ii = 0; ii < nx; ++ii)
+        {
+            const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
+            const int ii_e = (ii == nx-1) ? 0      : ii + 1;
+            const int idx  = row + ii;
 
-      tmp_cells->speeds[5][idx] = cells->speeds[5][row_south + ii_w];
-      tmp_cells->speeds[6][idx] = cells->speeds[6][row_south + ii_e];
-      tmp_cells->speeds[7][idx] = cells->speeds[7][row_north + ii_e];
-      tmp_cells->speeds[8][idx] = cells->speeds[8][row_north + ii_w];
+            t0[idx] = c0[idx];
+
+            t1[idx] = c1[row + ii_w];
+            t2[idx] = c2[row_south + ii];
+            t3[idx] = c3[row + ii_e];
+            t4[idx] = c4[row_north + ii];
+
+            t5[idx] = c5[row_south + ii_w];
+            t6[idx] = c6[row_south + ii_e];
+            t7[idx] = c7[row_north + ii_e];
+            t8[idx] = c8[row_north + ii_w];
+        }
     }
-  }
 
-  return EXIT_SUCCESS;
+    /* =======================
+       Bottom row
+       ======================= */
+    {
+        const int jj = ny - 1;
+        const int row       = jj * nx;
+        const int row_north = 0;
+        const int row_south = (jj - 1) * nx;
+
+        for (int ii = 0; ii < nx; ++ii)
+        {
+            const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
+            const int ii_e = (ii == nx-1) ? 0      : ii + 1;
+            const int idx  = row + ii;
+
+            t0[idx] = c0[idx];
+
+            t1[idx] = c1[row + ii_w];
+            t2[idx] = c2[row_south + ii];
+            t3[idx] = c3[row + ii_e];
+            t4[idx] = c4[row_north + ii];
+
+            t5[idx] = c5[row_south + ii_w];
+            t6[idx] = c6[row_south + ii_e];
+            t7[idx] = c7[row_north + ii_e];
+            t8[idx] = c8[row_north + ii_w];
+        }
+    }
+
+    /* =======================
+       Left + right columns
+       ======================= */
+    for (int jj = 1; jj < ny - 1; ++jj)
+    {
+        const int row       = jj * nx;
+        const int row_north = (jj + 1) * nx;
+        const int row_south = (jj - 1) * nx;
+
+        /* left column */
+        {
+            const int idx = row;
+            const int ii_w = nx - 1;
+            const int ii_e = 1;
+
+            t0[idx] = c0[idx];
+            t1[idx] = c1[row + ii_w];
+            t2[idx] = c2[row_south];
+            t3[idx] = c3[row + ii_e];
+            t4[idx] = c4[row_north];
+
+            t5[idx] = c5[row_south + ii_w];
+            t6[idx] = c6[row_south + ii_e];
+            t7[idx] = c7[row_north + ii_e];
+            t8[idx] = c8[row_north + ii_w];
+        }
+
+        /* right column */
+        {
+            const int ii = nx - 1;
+            const int idx = row + ii;
+            const int ii_w = ii - 1;
+            const int ii_e = 0;
+
+            t0[idx] = c0[idx];
+            t1[idx] = c1[row + ii_w];
+            t2[idx] = c2[row_south + ii];
+            t3[idx] = c3[row + ii_e];
+            t4[idx] = c4[row_north + ii];
+
+            t5[idx] = c5[row_south + ii_w];
+            t6[idx] = c6[row_south + ii_e];
+            t7[idx] = c7[row_north + ii_e];
+            t8[idx] = c8[row_north + ii_w];
+        }
+    }
+
+    return EXIT_SUCCESS;
 }
+
 
 int rebound(const t_param params,
             float * restrict c0,
