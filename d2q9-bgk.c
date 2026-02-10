@@ -197,6 +197,11 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
   propagate(params, cells, tmp_cells);
   rebound(params, cells, tmp_cells, obstacles);
   collision(params, cells, tmp_cells, obstacles);
+
+  t_speed temp = *cells;
+  *cells = *tmp_cells;
+  *tmp_cells = temp;
+
   return EXIT_SUCCESS;
 }
 
@@ -375,26 +380,42 @@ int rebound(const t_param params, t_speed* restrict cells, t_speed* restrict tmp
   for (int j = 0; j < params.ny; j += block_size){
     for(int i = 0; i < params.nx; i += block_size){
 
-      int max_jj = j + block_size;
-      int max_ii = i + block_size;
+      int max_jj = (j + block_size > params.ny) ? params.ny : j + block_size;
+      int max_ii = (i + block_size > params.nx) ? params.nx : i + block_size;
 
       for (int jj = j; jj < max_jj; jj++)
       {
         for (int ii = i; ii < max_ii; ii++)
         {
+          int idx = ii + jj*params.nx;
+          
           /* if the cell contains an obstacle */
-          if (obstacles[jj*params.nx + ii])
+          if (obstacles[idx])
           {
             /* called after propagate, so taking values from scratch space
             ** mirroring, and writing into main grid */
-            cells->speeds[1][ii + jj*params.nx] = tmp_cells->speeds[3][ii + jj*params.nx];
-            cells->speeds[2][ii + jj*params.nx] = tmp_cells->speeds[4][ii + jj*params.nx];
-            cells->speeds[3][ii + jj*params.nx] = tmp_cells->speeds[1][ii + jj*params.nx];
-            cells->speeds[4][ii + jj*params.nx] = tmp_cells->speeds[2][ii + jj*params.nx];
-            cells->speeds[5][ii + jj*params.nx] = tmp_cells->speeds[7][ii + jj*params.nx];
-            cells->speeds[6][ii + jj*params.nx] = tmp_cells->speeds[8][ii + jj*params.nx];
-            cells->speeds[7][ii + jj*params.nx] = tmp_cells->speeds[5][ii + jj*params.nx];
-            cells->speeds[8][ii + jj*params.nx] = tmp_cells->speeds[6][ii + jj*params.nx];
+            cells->speeds[0][idx] = tmp_cells->speeds[0][idx];  // Don't forget speed 0!
+            cells->speeds[1][idx] = tmp_cells->speeds[3][idx];
+            cells->speeds[2][idx] = tmp_cells->speeds[4][idx];
+            cells->speeds[3][idx] = tmp_cells->speeds[1][idx];
+            cells->speeds[4][idx] = tmp_cells->speeds[2][idx];
+            cells->speeds[5][idx] = tmp_cells->speeds[7][idx];
+            cells->speeds[6][idx] = tmp_cells->speeds[8][idx];
+            cells->speeds[7][idx] = tmp_cells->speeds[5][idx];
+            cells->speeds[8][idx] = tmp_cells->speeds[6][idx];
+          }
+          else
+          {
+            /* For non-obstacle cells, just copy propagated values */
+            cells->speeds[0][idx] = tmp_cells->speeds[0][idx];
+            cells->speeds[1][idx] = tmp_cells->speeds[1][idx];
+            cells->speeds[2][idx] = tmp_cells->speeds[2][idx];
+            cells->speeds[3][idx] = tmp_cells->speeds[3][idx];
+            cells->speeds[4][idx] = tmp_cells->speeds[4][idx];
+            cells->speeds[5][idx] = tmp_cells->speeds[5][idx];
+            cells->speeds[6][idx] = tmp_cells->speeds[6][idx];
+            cells->speeds[7][idx] = tmp_cells->speeds[7][idx];
+            cells->speeds[8][idx] = tmp_cells->speeds[8][idx];
           }
         }
       }
@@ -413,7 +434,7 @@ int collision(const t_param params,
   const int ny = params.ny;
   const float omega = params.omega;
 
-  // Precomputed constants
+  // Weights
   const float w0 = 4.f / 9.f;
   const float w1 = 1.f / 9.f;
   const float w2 = 1.f / 36.f;
@@ -422,44 +443,65 @@ int collision(const t_param params,
   const float inv_2_c_sq    = 1.5f;
   const float inv_2_c_sq_sq = 4.5f;
 
-  for (int jj = 0; jj < ny; jj++)
+  // Read from cells (post-rebound data)
+  float * restrict c0 = cells->speeds[0];
+  float * restrict c1 = cells->speeds[1];
+  float * restrict c2 = cells->speeds[2];
+  float * restrict c3 = cells->speeds[3];
+  float * restrict c4 = cells->speeds[4];
+  float * restrict c5 = cells->speeds[5];
+  float * restrict c6 = cells->speeds[6];
+  float * restrict c7 = cells->speeds[7];
+  float * restrict c8 = cells->speeds[8];
+
+  // Write to tmp_cells (output)
+  float * restrict t0 = tmp_cells->speeds[0];
+  float * restrict t1 = tmp_cells->speeds[1];
+  float * restrict t2 = tmp_cells->speeds[2];
+  float * restrict t3 = tmp_cells->speeds[3];
+  float * restrict t4 = tmp_cells->speeds[4];
+  float * restrict t5 = tmp_cells->speeds[5];
+  float * restrict t6 = tmp_cells->speeds[6];
+  float * restrict t7 = tmp_cells->speeds[7];
+  float * restrict t8 = tmp_cells->speeds[8];
+
+  for (int jj = 0; jj < ny; ++jj)
   {
     int row = jj * nx;
 
     #pragma omp simd
-    for (int ii = 0; ii < nx; ii++)
+    for (int ii = 0; ii < nx; ++ii)
     {
       int idx = row + ii;
 
-      float m = (float)(!obstacles[idx]);
+      // Branchless obstacle mask
+      float mask = (float)(!obstacles[idx]);
 
-      // Load distributions
-      float s0 = tmp_cells->speeds[0][idx];
-      float s1 = tmp_cells->speeds[1][idx];
-      float s2 = tmp_cells->speeds[2][idx];
-      float s3 = tmp_cells->speeds[3][idx];
-      float s4 = tmp_cells->speeds[4][idx];
-      float s5 = tmp_cells->speeds[5][idx];
-      float s6 = tmp_cells->speeds[6][idx];
-      float s7 = tmp_cells->speeds[7][idx];
-      float s8 = tmp_cells->speeds[8][idx];
+      // Load distributions from cells
+      float s0 = c0[idx];
+      float s1 = c1[idx];
+      float s2 = c2[idx];
+      float s3 = c3[idx];
+      float s4 = c4[idx];
+      float s5 = c5[idx];
+      float s6 = c6[idx];
+      float s7 = c7[idx];
+      float s8 = c8[idx];
 
       // Density
       float rho = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
+      rho = mask * rho + (1.0f - mask);
       float inv_rho = 1.0f / rho;
 
-      // Velocity 
-      float u_x = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
-      float u_y = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
+      // Velocity
+      float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
+      float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
 
-      float u_sq = u_x * u_x + u_y * u_y;
+      float u_sq = ux * ux + uy * uy;
       float common = 1.0f - inv_2_c_sq * u_sq;
 
-      // Equilibrium distributions 
+      // Equilibria
       float feq0 = w0 * rho * common;
-
-      float ux = u_x;
-      float uy = u_y;
 
       float feq1 = w1 * rho * (common + inv_c_sq * ux + inv_2_c_sq_sq * ux * ux);
       float feq2 = w1 * rho * (common + inv_c_sq * uy + inv_2_c_sq_sq * uy * uy);
@@ -480,16 +522,16 @@ int collision(const t_param params,
       uxy = ux - uy;
       float feq8 = w2 * rho * (common + inv_c_sq * uxy + inv_2_c_sq_sq * uxy * uxy);
 
-      // Relaxation (BGK)
-      cells->speeds[0][idx] = s0 + m * omega * (feq0 - s0);
-      cells->speeds[1][idx] = s1 + m * omega * (feq1 - s1);
-      cells->speeds[2][idx] = s2 + m * omega * (feq2 - s2);
-      cells->speeds[3][idx] = s3 + m * omega * (feq3 - s3);
-      cells->speeds[4][idx] = s4 + m * omega * (feq4 - s4);
-      cells->speeds[5][idx] = s5 + m * omega * (feq5 - s5);
-      cells->speeds[6][idx] = s6 + m * omega * (feq6 - s6);
-      cells->speeds[7][idx] = s7 + m * omega * (feq7 - s7);
-      cells->speeds[8][idx] = s8 + m * omega * (feq8 - s8);
+      // Relaxation (masked) - write to tmp_cells
+      t0[idx] = s0 + mask * omega * (feq0 - s0);
+      t1[idx] = s1 + mask * omega * (feq1 - s1);
+      t2[idx] = s2 + mask * omega * (feq2 - s2);
+      t3[idx] = s3 + mask * omega * (feq3 - s3);
+      t4[idx] = s4 + mask * omega * (feq4 - s4);
+      t5[idx] = s5 + mask * omega * (feq5 - s5);
+      t6[idx] = s6 + mask * omega * (feq6 - s6);
+      t7[idx] = s7 + mask * omega * (feq7 - s7);
+      t8[idx] = s8 + mask * omega * (feq8 - s8);
     }
   }
 
