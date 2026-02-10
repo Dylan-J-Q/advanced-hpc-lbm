@@ -96,7 +96,27 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
 int propagate(const t_param params, t_speed* cells, t_speed* tmp_cells);
 int rebound(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
-int collision(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
+int collision(const t_param params,
+              const float * restrict c0,
+              const float * restrict c1,
+              const float * restrict c2,
+              const float * restrict c3,
+              const float * restrict c4,
+              const float * restrict c5,
+              const float * restrict c6,
+              const float * restrict c7,
+              const float * restrict c8,
+              float * restrict t0,
+              float * restrict t1,
+              float * restrict t2,
+              float * restrict t3,
+              float * restrict t4,
+              float * restrict t5,
+              float * restrict t6,
+              float * restrict t7,
+              float * restrict t8,
+              const int * restrict obstacles);
+
 int write_values(const t_param params, t_speed* cells, int* obstacles, float* av_vels);
 
 /* finalise, including freeing up allocated memory */
@@ -196,7 +216,15 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
   accelerate_flow(params, cells, obstacles);
   propagate(params, cells, tmp_cells);
   rebound(params, cells, tmp_cells, obstacles);
-  collision(params, cells, tmp_cells, obstacles);
+  collision(params,
+          cells->speeds[0], cells->speeds[1], cells->speeds[2],
+          cells->speeds[3], cells->speeds[4], cells->speeds[5],
+          cells->speeds[6], cells->speeds[7], cells->speeds[8],
+          tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
+          tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
+          tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8],
+          obstacles);
+
 
   t_speed temp = *cells;
   *cells = *tmp_cells;
@@ -434,120 +462,92 @@ int rebound(const t_param params,
     return EXIT_SUCCESS;
 }
 
-
-
 int collision(const t_param params,
-              t_speed * restrict cells,
-              t_speed * restrict tmp_cells,
-              int * restrict obstacles)
+              const float * restrict c0,
+              const float * restrict c1,
+              const float * restrict c2,
+              const float * restrict c3,
+              const float * restrict c4,
+              const float * restrict c5,
+              const float * restrict c6,
+              const float * restrict c7,
+              const float * restrict c8,
+              float * restrict t0,
+              float * restrict t1,
+              float * restrict t2,
+              float * restrict t3,
+              float * restrict t4,
+              float * restrict t5,
+              float * restrict t6,
+              float * restrict t7,
+              float * restrict t8,
+              const int * restrict obstacles)
 {
-  const int nx = params.nx;
-  const int ny = params.ny;
+  const int N = params.nx * params.ny;
   const float omega = params.omega;
 
-  // Weights
-  const float w0 = 4.f / 9.f;
-  const float w1 = 1.f / 9.f;
-  const float w2 = 1.f / 36.f;
-
-  const float inv_c_sq      = 3.0f;
-  const float inv_2_c_sq    = 1.5f;
+  const float w0 = 4.f/9.f, w1 = 1.f/9.f, w2 = 1.f/36.f;
+  const float inv_c_sq = 3.f;
+  const float inv_2_c_sq = 1.5f;
   const float inv_2_c_sq_sq = 4.5f;
 
-  // Read from cells (post-rebound data)
-  float * restrict c0 = cells->speeds[0];
-  float * restrict c1 = cells->speeds[1];
-  float * restrict c2 = cells->speeds[2];
-  float * restrict c3 = cells->speeds[3];
-  float * restrict c4 = cells->speeds[4];
-  float * restrict c5 = cells->speeds[5];
-  float * restrict c6 = cells->speeds[6];
-  float * restrict c7 = cells->speeds[7];
-  float * restrict c8 = cells->speeds[8];
-
-  // Write to tmp_cells (output)
-  float * restrict t0 = tmp_cells->speeds[0];
-  float * restrict t1 = tmp_cells->speeds[1];
-  float * restrict t2 = tmp_cells->speeds[2];
-  float * restrict t3 = tmp_cells->speeds[3];
-  float * restrict t4 = tmp_cells->speeds[4];
-  float * restrict t5 = tmp_cells->speeds[5];
-  float * restrict t6 = tmp_cells->speeds[6];
-  float * restrict t7 = tmp_cells->speeds[7];
-  float * restrict t8 = tmp_cells->speeds[8];
-
-  for (int jj = 0; jj < ny; ++jj)
+  #pragma omp simd aligned(c0,c1,c2,c3,c4,c5,c6,c7,c8, \
+                           t0,t1,t2,t3,t4,t5,t6,t7,t8,obstacles:32)
+  for (int idx = 0; idx < N; ++idx)
   {
-    int row = jj * nx;
+    float mask = (float)(!obstacles[idx]);
 
-    #pragma omp simd
-    for (int ii = 0; ii < nx; ++ii)
-    {
-      int idx = row + ii;
+    float s0 = c0[idx];
+    float s1 = c1[idx];
+    float s2 = c2[idx];
+    float s3 = c3[idx];
+    float s4 = c4[idx];
+    float s5 = c5[idx];
+    float s6 = c6[idx];
+    float s7 = c7[idx];
+    float s8 = c8[idx];
 
-      // Branchless obstacle mask
-      float mask = (float)(!obstacles[idx]);
+    float rho = s0+s1+s2+s3+s4+s5+s6+s7+s8;
+    rho = mask * rho + (1.f - mask);
 
-      // Load distributions from cells
-      float s0 = c0[idx];
-      float s1 = c1[idx];
-      float s2 = c2[idx];
-      float s3 = c3[idx];
-      float s4 = c4[idx];
-      float s5 = c5[idx];
-      float s6 = c6[idx];
-      float s7 = c7[idx];
-      float s8 = c8[idx];
+    float inv_rho = 1.f / rho;
 
-      // Density
-      float rho = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
-      rho = mask * rho + (1.0f - mask);
-      float inv_rho = 1.0f / rho;
+    float ux = (s1+s5+s8 - (s3+s6+s7)) * inv_rho;
+    float uy = (s2+s5+s6 - (s4+s7+s8)) * inv_rho;
 
-      // Velocity
-      float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
-      float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
+    float u2 = ux*ux + uy*uy;
+    float common = 1.f - inv_2_c_sq * u2;
 
-      float u_sq = ux * ux + uy * uy;
-      float common = 1.0f - inv_2_c_sq * u_sq;
+    float feq0 = w0 * rho * common;
+    float feq1 = w1 * rho * (common + inv_c_sq*ux + inv_2_c_sq_sq*ux*ux);
+    float feq2 = w1 * rho * (common + inv_c_sq*uy + inv_2_c_sq_sq*uy*uy);
+    float feq3 = w1 * rho * (common - inv_c_sq*ux + inv_2_c_sq_sq*ux*ux);
+    float feq4 = w1 * rho * (common - inv_c_sq*uy + inv_2_c_sq_sq*uy*uy);
 
-      // Equilibria
-      float feq0 = w0 * rho * common;
+    float uxy = ux + uy;
+    float feq5 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
+    uxy = -ux + uy;
+    float feq6 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
+    uxy = -ux - uy;
+    float feq7 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
+    uxy = ux - uy;
+    float feq8 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
 
-      float feq1 = w1 * rho * (common + inv_c_sq * ux + inv_2_c_sq_sq * ux * ux);
-      float feq2 = w1 * rho * (common + inv_c_sq * uy + inv_2_c_sq_sq * uy * uy);
-      float feq3 = w1 * rho * (common - inv_c_sq * ux + inv_2_c_sq_sq * ux * ux);
-      float feq4 = w1 * rho * (common - inv_c_sq * uy + inv_2_c_sq_sq * uy * uy);
-
-      float uxy;
-
-      uxy = ux + uy;
-      float feq5 = w2 * rho * (common + inv_c_sq * uxy + inv_2_c_sq_sq * uxy * uxy);
-
-      uxy = -ux + uy;
-      float feq6 = w2 * rho * (common + inv_c_sq * uxy + inv_2_c_sq_sq * uxy * uxy);
-
-      uxy = -ux - uy;
-      float feq7 = w2 * rho * (common + inv_c_sq * uxy + inv_2_c_sq_sq * uxy * uxy);
-
-      uxy = ux - uy;
-      float feq8 = w2 * rho * (common + inv_c_sq * uxy + inv_2_c_sq_sq * uxy * uxy);
-
-      // Relaxation (masked) - write to tmp_cells
-      t0[idx] = s0 + mask * omega * (feq0 - s0);
-      t1[idx] = s1 + mask * omega * (feq1 - s1);
-      t2[idx] = s2 + mask * omega * (feq2 - s2);
-      t3[idx] = s3 + mask * omega * (feq3 - s3);
-      t4[idx] = s4 + mask * omega * (feq4 - s4);
-      t5[idx] = s5 + mask * omega * (feq5 - s5);
-      t6[idx] = s6 + mask * omega * (feq6 - s6);
-      t7[idx] = s7 + mask * omega * (feq7 - s7);
-      t8[idx] = s8 + mask * omega * (feq8 - s8);
-    }
+    t0[idx] = s0 + mask * omega * (feq0 - s0);
+    t1[idx] = s1 + mask * omega * (feq1 - s1);
+    t2[idx] = s2 + mask * omega * (feq2 - s2);
+    t3[idx] = s3 + mask * omega * (feq3 - s3);
+    t4[idx] = s4 + mask * omega * (feq4 - s4);
+    t5[idx] = s5 + mask * omega * (feq5 - s5);
+    t6[idx] = s6 + mask * omega * (feq6 - s6);
+    t7[idx] = s7 + mask * omega * (feq7 - s7);
+    t8[idx] = s8 + mask * omega * (feq8 - s8);
   }
 
   return EXIT_SUCCESS;
 }
+
+
 
 
 float av_velocity(const t_param params, t_speed* cells, int* obstacles)
