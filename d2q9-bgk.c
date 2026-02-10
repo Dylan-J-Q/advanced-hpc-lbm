@@ -373,57 +373,68 @@ int propagate(const t_param params,
   return EXIT_SUCCESS;
 }
 
-int rebound(const t_param params, t_speed* restrict cells, t_speed* restrict tmp_cells, int* restrict obstacles)
+int rebound(const t_param params,
+            t_speed * restrict cells,
+            t_speed * restrict tmp_cells,
+            int     * restrict obstacles)
 {
-  /* loop over the cells in the grid */
-  int block_size = 32;
-  for (int j = 0; j < params.ny; j += block_size){
-    for(int i = 0; i < params.nx; i += block_size){
+    const int nx = params.nx;
+    const int ny = params.ny;
+    const int n  = nx * ny;
 
-      int max_jj = (j + block_size > params.ny) ? params.ny : j + block_size;
-      int max_ii = (i + block_size > params.nx) ? params.nx : i + block_size;
+    /* Hoist speed pointers */
+    float * restrict c0 = cells->speeds[0];
+    float * restrict c1 = cells->speeds[1];
+    float * restrict c2 = cells->speeds[2];
+    float * restrict c3 = cells->speeds[3];
+    float * restrict c4 = cells->speeds[4];
+    float * restrict c5 = cells->speeds[5];
+    float * restrict c6 = cells->speeds[6];
+    float * restrict c7 = cells->speeds[7];
+    float * restrict c8 = cells->speeds[8];
 
-      for (int jj = j; jj < max_jj; jj++)
-      {
-        for (int ii = i; ii < max_ii; ii++)
-        {
-          int idx = ii + jj*params.nx;
-          
-          /* if the cell contains an obstacle */
-          if (obstacles[idx])
-          {
-            /* called after propagate, so taking values from scratch space
-            ** mirroring, and writing into main grid */
-            cells->speeds[0][idx] = tmp_cells->speeds[0][idx];  // Don't forget speed 0!
-            cells->speeds[1][idx] = tmp_cells->speeds[3][idx];
-            cells->speeds[2][idx] = tmp_cells->speeds[4][idx];
-            cells->speeds[3][idx] = tmp_cells->speeds[1][idx];
-            cells->speeds[4][idx] = tmp_cells->speeds[2][idx];
-            cells->speeds[5][idx] = tmp_cells->speeds[7][idx];
-            cells->speeds[6][idx] = tmp_cells->speeds[8][idx];
-            cells->speeds[7][idx] = tmp_cells->speeds[5][idx];
-            cells->speeds[8][idx] = tmp_cells->speeds[6][idx];
-          }
-          else
-          {
-            /* For non-obstacle cells, just copy propagated values */
-            cells->speeds[0][idx] = tmp_cells->speeds[0][idx];
-            cells->speeds[1][idx] = tmp_cells->speeds[1][idx];
-            cells->speeds[2][idx] = tmp_cells->speeds[2][idx];
-            cells->speeds[3][idx] = tmp_cells->speeds[3][idx];
-            cells->speeds[4][idx] = tmp_cells->speeds[4][idx];
-            cells->speeds[5][idx] = tmp_cells->speeds[5][idx];
-            cells->speeds[6][idx] = tmp_cells->speeds[6][idx];
-            cells->speeds[7][idx] = tmp_cells->speeds[7][idx];
-            cells->speeds[8][idx] = tmp_cells->speeds[8][idx];
-          }
-        }
-      }
+    float * restrict t0 = tmp_cells->speeds[0];
+    float * restrict t1 = tmp_cells->speeds[1];
+    float * restrict t2 = tmp_cells->speeds[2];
+    float * restrict t3 = tmp_cells->speeds[3];
+    float * restrict t4 = tmp_cells->speeds[4];
+    float * restrict t5 = tmp_cells->speeds[5];
+    float * restrict t6 = tmp_cells->speeds[6];
+    float * restrict t7 = tmp_cells->speeds[7];
+    float * restrict t8 = tmp_cells->speeds[8];
+
+    #pragma omp simd
+    for (int idx = 0; idx < n; ++idx)
+    {
+        float m  = (float)obstacles[idx];
+        float nm = 1.0f - m;
+
+        float s0 = t0[idx];
+        float s1 = t1[idx];
+        float s2 = t2[idx];
+        float s3 = t3[idx];
+        float s4 = t4[idx];
+        float s5 = t5[idx];
+        float s6 = t6[idx];
+        float s7 = t7[idx];
+        float s8 = t8[idx];
+
+        /* Bounce-back */
+        c0[idx] = s0;
+        c1[idx] = m * s3 + nm * s1;
+        c2[idx] = m * s4 + nm * s2;
+        c3[idx] = m * s1 + nm * s3;
+        c4[idx] = m * s2 + nm * s4;
+        c5[idx] = m * s7 + nm * s5;
+        c6[idx] = m * s8 + nm * s6;
+        c7[idx] = m * s5 + nm * s7;
+        c8[idx] = m * s6 + nm * s8;
     }
-  }
 
-  return EXIT_SUCCESS;
+    return EXIT_SUCCESS;
 }
+
+
 
 int collision(const t_param params,
               t_speed * restrict cells,
