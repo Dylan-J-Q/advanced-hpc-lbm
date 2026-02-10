@@ -4,12 +4,14 @@ EXE=d2q9-bgk
 
 CC=gcc
 CFLAGS= -std=c99 -pg -fopenmp -Wall -O3 -ffast-math -march=native -funroll-loops -fopt-info-vec-optimized -fopt-info-vec-missed
+#CFLAGS= -std=c99 -fopenmp -Wall -O3 -ffast-math -march=native -funroll-loops
+
 LIBS = -lm
 
 FINAL_STATE_FILE=./final_state.dat
 AV_VELS_FILE=./av_vels.dat
-REF_FINAL_STATE_FILE=check/128x128.final_state.dat
-REF_AV_VELS_FILE=check/128x128.av_vels.dat
+REF_FINAL_STATE_FILE=check/128x256.final_state.dat
+REF_AV_VELS_FILE=check/128x256.av_vels.dat
 
 all: $(EXE)
 

@@ -95,7 +95,27 @@ int initialise(const char* paramfile, const char* obstaclefile,
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
 int propagate(const t_param params, t_speed* cells, t_speed* tmp_cells);
-int rebound(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
+int rebound(const t_param params,
+            float * restrict c0,
+            float * restrict c1,
+            float * restrict c2,
+            float * restrict c3,
+            float * restrict c4,
+            float * restrict c5,
+            float * restrict c6,
+            float * restrict c7,
+            float * restrict c8,
+            const float * restrict t0,
+            const float * restrict t1,
+            const float * restrict t2,
+            const float * restrict t3,
+            const float * restrict t4,
+            const float * restrict t5,
+            const float * restrict t6,
+            const float * restrict t7,
+            const float * restrict t8,
+            const int   * restrict obstacles);
+
 int collision(const t_param params,
               const float * restrict c0,
               const float * restrict c1,
@@ -128,7 +148,17 @@ int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
 float total_density(const t_param params, t_speed* cells);
 
 /* compute average velocity */
-float av_velocity(const t_param params, t_speed* cells, int* obstacles);
+float av_velocity(const t_param params,
+              float * restrict c0,
+              float * restrict c1,
+              float * restrict c2,
+              float * restrict c3,
+              float * restrict c4,
+              float * restrict c5,
+              float * restrict c6,
+              float * restrict c7,
+              float * restrict c8, 
+              const int* obstacles);
 
 /* calculate Reynolds number */
 float calc_reynolds(const t_param params, t_speed* cells, int* obstacles);
@@ -178,7 +208,11 @@ int main(int argc, char* argv[])
   for (int tt = 0; tt < params.maxIters; tt++)
   {
     timestep(params, cells, tmp_cells, obstacles);
-    av_vels[tt] = av_velocity(params, cells, obstacles);
+    av_vels[tt] = av_velocity(params,
+          cells->speeds[0], cells->speeds[1], cells->speeds[2],
+          cells->speeds[3], cells->speeds[4], cells->speeds[5],
+          cells->speeds[6], cells->speeds[7], cells->speeds[8],
+          obstacles);
 #ifdef DEBUG
     printf("==timestep: %d==\n", tt);
     printf("av velocity: %.12E\n", av_vels[tt]);
@@ -215,7 +249,15 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
 {
   accelerate_flow(params, cells, obstacles);
   propagate(params, cells, tmp_cells);
-  rebound(params, cells, tmp_cells, obstacles);
+  rebound(params,
+          cells->speeds[0], cells->speeds[1], cells->speeds[2],
+          cells->speeds[3], cells->speeds[4], cells->speeds[5],
+          cells->speeds[6], cells->speeds[7], cells->speeds[8],
+          tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
+          tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
+          tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8],
+          obstacles);
+
   collision(params,
           cells->speeds[0], cells->speeds[1], cells->speeds[2],
           cells->speeds[3], cells->speeds[4], cells->speeds[5],
@@ -402,36 +444,31 @@ int propagate(const t_param params,
 }
 
 int rebound(const t_param params,
-            t_speed * restrict cells,
-            t_speed * restrict tmp_cells,
-            int     * restrict obstacles)
+            float * restrict c0,
+            float * restrict c1,
+            float * restrict c2,
+            float * restrict c3,
+            float * restrict c4,
+            float * restrict c5,
+            float * restrict c6,
+            float * restrict c7,
+            float * restrict c8,
+            const float * restrict t0,
+            const float * restrict t1,
+            const float * restrict t2,
+            const float * restrict t3,
+            const float * restrict t4,
+            const float * restrict t5,
+            const float * restrict t6,
+            const float * restrict t7,
+            const float * restrict t8,
+            const int   * restrict obstacles)
 {
-    const int nx = params.nx;
-    const int ny = params.ny;
-    const int n  = nx * ny;
+    const int n = params.nx * params.ny;
 
-    /* Hoist speed pointers */
-    float * restrict c0 = cells->speeds[0];
-    float * restrict c1 = cells->speeds[1];
-    float * restrict c2 = cells->speeds[2];
-    float * restrict c3 = cells->speeds[3];
-    float * restrict c4 = cells->speeds[4];
-    float * restrict c5 = cells->speeds[5];
-    float * restrict c6 = cells->speeds[6];
-    float * restrict c7 = cells->speeds[7];
-    float * restrict c8 = cells->speeds[8];
-
-    float * restrict t0 = tmp_cells->speeds[0];
-    float * restrict t1 = tmp_cells->speeds[1];
-    float * restrict t2 = tmp_cells->speeds[2];
-    float * restrict t3 = tmp_cells->speeds[3];
-    float * restrict t4 = tmp_cells->speeds[4];
-    float * restrict t5 = tmp_cells->speeds[5];
-    float * restrict t6 = tmp_cells->speeds[6];
-    float * restrict t7 = tmp_cells->speeds[7];
-    float * restrict t8 = tmp_cells->speeds[8];
-
-    #pragma omp simd
+    #pragma omp simd aligned(c0,c1,c2,c3,c4,c5,c6,c7,c8, \
+                             t0,t1,t2,t3,t4,t5,t6,t7,t8, \
+                             obstacles:32)
     for (int idx = 0; idx < n; ++idx)
     {
         float m  = (float)obstacles[idx];
@@ -447,7 +484,6 @@ int rebound(const t_param params,
         float s7 = t7[idx];
         float s8 = t8[idx];
 
-        /* Bounce-back */
         c0[idx] = s0;
         c1[idx] = m * s3 + nm * s1;
         c2[idx] = m * s4 + nm * s2;
@@ -461,6 +497,7 @@ int rebound(const t_param params,
 
     return EXIT_SUCCESS;
 }
+
 
 int collision(const t_param params,
               const float * restrict c0,
@@ -547,55 +584,58 @@ int collision(const t_param params,
   return EXIT_SUCCESS;
 }
 
-
-
-
-float av_velocity(const t_param params, t_speed* cells, int* obstacles)
+float av_velocity(const t_param params,
+              float * restrict c0,
+              float * restrict c1,
+              float * restrict c2,
+              float * restrict c3,
+              float * restrict c4,
+              float * restrict c5,
+              float * restrict c6,
+              float * restrict c7,
+              float * restrict c8, 
+              const int* obstacles)
 {
-    int tot_cells = 0;
-    float tot_u = 0.f;
-
     const int nx = params.nx;
     const int ny = params.ny;
+    const int n  = nx * ny;
 
-    for (int jj = 0; jj < ny; jj++)
+    float tot_u = 0.f;
+    int tot_cells = 0;
+
+    for (int idx = 0; idx < n; ++idx)
     {
-        int row = jj * nx;
+        // Skip obstacles early
+        if (obstacles[idx]) continue;
 
-        for (int ii = 0; ii < nx; ii++)
-        {
-            int idx = row + ii;
+        // Load speeds
+        float s0 = c0[idx];
+        float s1 = c1[idx];
+        float s2 = c2[idx];
+        float s3 = c3[idx];
+        float s4 = c4[idx];
+        float s5 = c5[idx];
+        float s6 = c6[idx];
+        float s7 = c7[idx];
+        float s8 = c8[idx];
 
-            if (obstacles[idx]) continue;
+        // Compute local density once
+        float rho = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
+        float inv_rho = 1.f / rho;
 
-            /* Load speeds into scalars */
-            float s0 = cells->speeds[0][idx];
-            float s1 = cells->speeds[1][idx];
-            float s2 = cells->speeds[2][idx];
-            float s3 = cells->speeds[3][idx];
-            float s4 = cells->speeds[4][idx];
-            float s5 = cells->speeds[5][idx];
-            float s6 = cells->speeds[6][idx];
-            float s7 = cells->speeds[7][idx];
-            float s8 = cells->speeds[8][idx];
+        // Velocity components
+        float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
+        float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
 
-            /* Local density */
-            float local_density = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
-            float inv_rho = 1.0f / local_density;
-
-            /* Velocity components */
-            float u_x = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
-            float u_y = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
-
-            /* Accumulate magnitude */
-            tot_u += sqrtf(u_x*u_x + u_y*u_y);
-
-            tot_cells++;
-        }
+        // Accumulate magnitude
+        tot_u += sqrtf(ux*ux + uy*uy);
+        tot_cells++;
     }
 
-    return tot_u / (float)tot_cells;
+    // Avoid division by zero
+    return (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
 }
+
 
 
 int initialise(const char* paramfile, const char* obstaclefile,
@@ -796,7 +836,11 @@ float calc_reynolds(const t_param params, t_speed* cells, int* obstacles)
 {
   const float viscosity = 1.f / 6.f * (2.f / params.omega - 1.f);
 
-  return av_velocity(params, cells, obstacles) * params.reynolds_dim / viscosity;
+  return av_velocity(params,
+          cells->speeds[0], cells->speeds[1], cells->speeds[2],
+          cells->speeds[3], cells->speeds[4], cells->speeds[5],
+          cells->speeds[6], cells->speeds[7], cells->speeds[8],
+          obstacles) * params.reynolds_dim / viscosity;
 }
 
 float total_density(const t_param params, t_speed* cells)
