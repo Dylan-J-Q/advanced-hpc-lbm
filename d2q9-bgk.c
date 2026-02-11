@@ -94,7 +94,8 @@ int initialise(const char* paramfile, const char* obstaclefile,
 */
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
-int propagate(const t_param params,
+
+int propagate_and_rebound(const t_param params,
               const float * restrict c0,
               const float * restrict c1,
               const float * restrict c2,
@@ -112,28 +113,8 @@ int propagate(const t_param params,
               float * restrict t5,
               float * restrict t6,
               float * restrict t7,
-              float * restrict t8);
-
-int rebound(const t_param params,
-            float * restrict c0,
-            float * restrict c1,
-            float * restrict c2,
-            float * restrict c3,
-            float * restrict c4,
-            float * restrict c5,
-            float * restrict c6,
-            float * restrict c7,
-            float * restrict c8,
-            const float * restrict t0,
-            const float * restrict t1,
-            const float * restrict t2,
-            const float * restrict t3,
-            const float * restrict t4,
-            const float * restrict t5,
-            const float * restrict t6,
-            const float * restrict t7,
-            const float * restrict t8,
-            const int   * restrict obstacles);
+              float * restrict t8,
+              const int   * restrict obstacles);
 
 int collision(const t_param params,
               const float * restrict c0,
@@ -267,34 +248,27 @@ int main(int argc, char* argv[])
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles)
 {
   accelerate_flow(params, cells, obstacles);
-  propagate(params, cells->speeds[0], cells->speeds[1], cells->speeds[2],
-          cells->speeds[3], cells->speeds[4], cells->speeds[5],
-          cells->speeds[6], cells->speeds[7], cells->speeds[8],
-          tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
-          tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
-          tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8]);
-  rebound(params,
-          cells->speeds[0], cells->speeds[1], cells->speeds[2],
-          cells->speeds[3], cells->speeds[4], cells->speeds[5],
-          cells->speeds[6], cells->speeds[7], cells->speeds[8],
+
+  //read cells write to tmp
+  propagate_and_rebound(params,
+          cells->speeds[0],  cells->speeds[1],  cells->speeds[2],
+          cells->speeds[3],  cells->speeds[4],  cells->speeds[5],
+          cells->speeds[6],  cells->speeds[7],  cells->speeds[8],
           tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
           tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
           tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8],
           obstacles);
 
+  //read tmp write to cells
   collision(params,
-          cells->speeds[0], cells->speeds[1], cells->speeds[2],
-          cells->speeds[3], cells->speeds[4], cells->speeds[5],
-          cells->speeds[6], cells->speeds[7], cells->speeds[8],
           tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
           tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
           tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8],
+          cells->speeds[0], cells->speeds[1], cells->speeds[2],
+          cells->speeds[3], cells->speeds[4], cells->speeds[5],
+          cells->speeds[6], cells->speeds[7], cells->speeds[8],
           obstacles);
 
-
-  t_speed temp = *cells;
-  *cells = *tmp_cells;
-  *tmp_cells = temp;
 
   return EXIT_SUCCESS;
 }
@@ -333,7 +307,7 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
   return EXIT_SUCCESS;
 }
 
-int propagate(const t_param params,
+int propagate_and_rebound(const t_param params,
               const float * restrict c0,
               const float * restrict c1,
               const float * restrict c2,
@@ -351,7 +325,8 @@ int propagate(const t_param params,
               float * restrict t5,
               float * restrict t6,
               float * restrict t7,
-              float * restrict t8)
+              float * restrict t8,
+              const int   * restrict obstacles)
 {
     const int nx = params.nx;
     const int ny = params.ny;
@@ -368,21 +343,34 @@ int propagate(const t_param params,
         {
             const int idx = row + ii;
 
-            t0[idx] = c0[idx];
+            const float s0 = c0[idx];
 
-            t1[idx] = c1[idx - 1];
-            t2[idx] = c2[row_south + ii];
-            t3[idx] = c3[idx + 1];
-            t4[idx] = c4[row_north + ii];
+            const float s1 = c1[idx - 1];
+            const float s2 = c2[row_south + ii];
+            const float s3 = c3[idx + 1];
+            const float s4 = c4[row_north + ii]; 
 
-            t5[idx] = c5[row_south + ii - 1];
-            t6[idx] = c6[row_south + ii + 1];
-            t7[idx] = c7[row_north + ii + 1];
-            t8[idx] = c8[row_north + ii - 1];
+            const float s5 = c5[row_south + ii - 1];
+            const float s6 = c6[row_south + ii + 1];
+            const float s7 = c7[row_north + ii + 1];
+            const float s8 = c8[row_north + ii - 1];
+
+            const float m  = (float)obstacles[idx];
+            const float nm = 1.0f - m;
+
+            t0[idx] = s0;
+            t1[idx] = m * s3 + nm * s1;
+            t2[idx] = m * s4 + nm * s2;
+            t3[idx] = m * s1 + nm * s3;
+            t4[idx] = m * s2 + nm * s4;
+            t5[idx] = m * s7 + nm * s5;
+            t6[idx] = m * s8 + nm * s6;
+            t7[idx] = m * s5 + nm * s7;
+            t8[idx] = m * s6 + nm * s8;
         }
     }
 
-    //top
+    //top row
     {
         const int row       = 0;
         const int row_north = nx;
@@ -394,24 +382,37 @@ int propagate(const t_param params,
             const int ii_e = (ii == nx-1) ? 0      : ii + 1;
             const int idx  = row + ii;
 
-            t0[idx] = c0[idx];
+            const float s0 = c0[idx];
 
-            t1[idx] = c1[row + ii_w];
-            t2[idx] = c2[row_south + ii];
-            t3[idx] = c3[row + ii_e];
-            t4[idx] = c4[row_north + ii];
+            const float s1 = c1[row + ii_w];
+            const float s2 = c2[row_south + ii];
+            const float s3 = c3[row + ii_e];
+            const float s4 = c4[row_north + ii];
 
-            t5[idx] = c5[row_south + ii_w];
-            t6[idx] = c6[row_south + ii_e];
-            t7[idx] = c7[row_north + ii_e];
-            t8[idx] = c8[row_north + ii_w];
+            const float s5 = c5[row_south + ii_w];
+            const float s6 = c6[row_south + ii_e];
+            const float s7 = c7[row_north + ii_e];
+            const float s8 = c8[row_north + ii_w];
+
+            const float m  = (float)obstacles[idx];
+            const float nm = 1.0f - m;
+
+            t0[idx] = s0;
+            t1[idx] = m * s3 + nm * s1;
+            t2[idx] = m * s4 + nm * s2;
+            t3[idx] = m * s1 + nm * s3;
+            t4[idx] = m * s2 + nm * s4;
+            t5[idx] = m * s7 + nm * s5;
+            t6[idx] = m * s8 + nm * s6;
+            t7[idx] = m * s5 + nm * s7;
+            t8[idx] = m * s6 + nm * s8;
         }
     }
 
-    //bottom
+    //bottom row
     {
         const int jj = ny - 1;
-        const int row       = jj * nx;
+        const int row = jj * nx;
         const int row_north = 0;
         const int row_south = (jj - 1) * nx;
 
@@ -421,17 +422,30 @@ int propagate(const t_param params,
             const int ii_e = (ii == nx-1) ? 0      : ii + 1;
             const int idx  = row + ii;
 
-            t0[idx] = c0[idx];
+            const float s0 = c0[idx];
 
-            t1[idx] = c1[row + ii_w];
-            t2[idx] = c2[row_south + ii];
-            t3[idx] = c3[row + ii_e];
-            t4[idx] = c4[row_north + ii];
+            const float s1 = c1[row + ii_w];
+            const float s2 = c2[row_south + ii];
+            const float s3 = c3[row + ii_e];
+            const float s4 = c4[row_north + ii];
 
-            t5[idx] = c5[row_south + ii_w];
-            t6[idx] = c6[row_south + ii_e];
-            t7[idx] = c7[row_north + ii_e];
-            t8[idx] = c8[row_north + ii_w];
+            const float s5 = c5[row_south + ii_w];
+            const float s6 = c6[row_south + ii_e];
+            const float s7 = c7[row_north + ii_e];
+            const float s8 = c8[row_north + ii_w];
+
+            const float m  = (float)obstacles[idx];
+            const float nm = 1.0f - m;
+
+            t0[idx] = s0;
+            t1[idx] = m * s3 + nm * s1;
+            t2[idx] = m * s4 + nm * s2;
+            t3[idx] = m * s1 + nm * s3;
+            t4[idx] = m * s2 + nm * s4;
+            t5[idx] = m * s7 + nm * s5;
+            t6[idx] = m * s8 + nm * s6;
+            t7[idx] = m * s5 + nm * s7;
+            t8[idx] = m * s6 + nm * s8;
         }
     }
 
@@ -441,103 +455,73 @@ int propagate(const t_param params,
         const int row_north = (jj + 1) * nx;
         const int row_south = (jj - 1) * nx;
 
-        //left
+        //left column
         {
             const int idx = row;
             const int ii_w = nx - 1;
             const int ii_e = 1;
 
-            t0[idx] = c0[idx];
-            t1[idx] = c1[row + ii_w];
-            t2[idx] = c2[row_south];
-            t3[idx] = c3[row + ii_e];
-            t4[idx] = c4[row_north];
+            const float s0 = c0[idx];
 
-            t5[idx] = c5[row_south + ii_w];
-            t6[idx] = c6[row_south + ii_e];
-            t7[idx] = c7[row_north + ii_e];
-            t8[idx] = c8[row_north + ii_w];
+            const float s1 = c1[row + ii_w];
+            const float s2 = c2[row_south];
+            const float s3 = c3[row + ii_e];
+            const float s4 = c4[row_north];
+
+            const float s5 = c5[row_south + ii_w];
+            const float s6 = c6[row_south + ii_e];
+            const float s7 = c7[row_north + ii_e];
+            const float s8 = c8[row_north + ii_w];
+
+            const float m  = (float)obstacles[idx];
+            const float nm = 1.0f - m;
+
+            t0[idx] = s0;
+            t1[idx] = m * s3 + nm * s1;
+            t2[idx] = m * s4 + nm * s2;
+            t3[idx] = m * s1 + nm * s3;
+            t4[idx] = m * s2 + nm * s4;
+            t5[idx] = m * s7 + nm * s5;
+            t6[idx] = m * s8 + nm * s6;
+            t7[idx] = m * s5 + nm * s7;
+            t8[idx] = m * s6 + nm * s8;
         }
 
-        //right
+        //right column
         {
             const int ii = nx - 1;
             const int idx = row + ii;
             const int ii_w = ii - 1;
             const int ii_e = 0;
 
-            t0[idx] = c0[idx];
-            t1[idx] = c1[row + ii_w];
-            t2[idx] = c2[row_south + ii];
-            t3[idx] = c3[row + ii_e];
-            t4[idx] = c4[row_north + ii];
+            const float s0 = c0[idx];
 
-            t5[idx] = c5[row_south + ii_w];
-            t6[idx] = c6[row_south + ii_e];
-            t7[idx] = c7[row_north + ii_e];
-            t8[idx] = c8[row_north + ii_w];
+            const float s1 = c1[row + ii_w];
+            const float s2 = c2[row_south + ii];
+            const float s3 = c3[row + ii_e];
+            const float s4 = c4[row_north + ii];
+
+            const float s5 = c5[row_south + ii_w];
+            const float s6 = c6[row_south + ii_e];
+            const float s7 = c7[row_north + ii_e];
+            const float s8 = c8[row_north + ii_w];
+
+            const float m  = (float)obstacles[idx];
+            const float nm = 1.0f - m;
+
+            t0[idx] = s0;
+            t1[idx] = m * s3 + nm * s1;
+            t2[idx] = m * s4 + nm * s2;
+            t3[idx] = m * s1 + nm * s3;
+            t4[idx] = m * s2 + nm * s4;
+            t5[idx] = m * s7 + nm * s5;
+            t6[idx] = m * s8 + nm * s6;
+            t7[idx] = m * s5 + nm * s7;
+            t8[idx] = m * s6 + nm * s8;
         }
     }
-
     return EXIT_SUCCESS;
 }
-
-
-int rebound(const t_param params,
-            float * restrict c0,
-            float * restrict c1,
-            float * restrict c2,
-            float * restrict c3,
-            float * restrict c4,
-            float * restrict c5,
-            float * restrict c6,
-            float * restrict c7,
-            float * restrict c8,
-            const float * restrict t0,
-            const float * restrict t1,
-            const float * restrict t2,
-            const float * restrict t3,
-            const float * restrict t4,
-            const float * restrict t5,
-            const float * restrict t6,
-            const float * restrict t7,
-            const float * restrict t8,
-            const int   * restrict obstacles)
-{
-    const int n = params.nx * params.ny;
-
-    #pragma omp simd aligned(c0,c1,c2,c3,c4,c5,c6,c7,c8, \
-                             t0,t1,t2,t3,t4,t5,t6,t7,t8, \
-                             obstacles:32)
-    for (int idx = 0; idx < n; ++idx)
-    {
-        float m  = (float)obstacles[idx];
-        float nm = 1.0f - m;
-
-        float s0 = t0[idx];
-        float s1 = t1[idx];
-        float s2 = t2[idx];
-        float s3 = t3[idx];
-        float s4 = t4[idx];
-        float s5 = t5[idx];
-        float s6 = t6[idx];
-        float s7 = t7[idx];
-        float s8 = t8[idx];
-
-        c0[idx] = s0;
-        c1[idx] = m * s3 + nm * s1;
-        c2[idx] = m * s4 + nm * s2;
-        c3[idx] = m * s1 + nm * s3;
-        c4[idx] = m * s2 + nm * s4;
-        c5[idx] = m * s7 + nm * s5;
-        c6[idx] = m * s8 + nm * s6;
-        c7[idx] = m * s5 + nm * s7;
-        c8[idx] = m * s6 + nm * s8;
-    }
-
-    return EXIT_SUCCESS;
-}
-
 
 int collision(const t_param params,
               const float * restrict c0,
