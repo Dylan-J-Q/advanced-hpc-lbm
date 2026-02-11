@@ -356,9 +356,7 @@ int propagate(const t_param params,
     const int nx = params.nx;
     const int ny = params.ny;
 
-    /* =======================
-       Interior cells
-       ======================= */
+    //interior
     for (int jj = 1; jj < ny - 1; ++jj)
     {
         const int row       = jj * nx;
@@ -384,9 +382,7 @@ int propagate(const t_param params,
         }
     }
 
-    /* =======================
-       Top row
-       ======================= */
+    //top
     {
         const int row       = 0;
         const int row_north = nx;
@@ -412,9 +408,7 @@ int propagate(const t_param params,
         }
     }
 
-    /* =======================
-       Bottom row
-       ======================= */
+    //bottom
     {
         const int jj = ny - 1;
         const int row       = jj * nx;
@@ -441,16 +435,13 @@ int propagate(const t_param params,
         }
     }
 
-    /* =======================
-       Left + right columns
-       ======================= */
     for (int jj = 1; jj < ny - 1; ++jj)
     {
         const int row       = jj * nx;
         const int row_north = (jj + 1) * nx;
         const int row_south = (jj - 1) * nx;
 
-        /* left column */
+        //left
         {
             const int idx = row;
             const int ii_w = nx - 1;
@@ -468,7 +459,7 @@ int propagate(const t_param params,
             t8[idx] = c8[row_north + ii_w];
         }
 
-        /* right column */
+        //right
         {
             const int ii = nx - 1;
             const int idx = row + ii;
