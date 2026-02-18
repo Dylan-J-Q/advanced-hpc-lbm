@@ -372,6 +372,7 @@ int propagate_rebound_collide(
     const float omega = params.omega;
 
     //interior loop
+    #pragma omp parallel for
     for (int jj = 1; jj < ny - 1; ++jj) {
         const int row       = jj * nx;
         const int row_north = (jj + 1) * nx;
@@ -422,6 +423,7 @@ int propagate_rebound_collide(
     const int row_north_bot  = 0;
     const int row_south_bot  = (jj_bot - 1) * nx;
 
+    #pragma omp parallel for
     for (int ii = 0; ii < nx; ++ii) {
         const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
         const int ii_e = (ii == nx-1) ? 0      : ii + 1;
@@ -496,6 +498,7 @@ int propagate_rebound_collide(
     }
 
     //left and right columns
+    #pragma omp parallel for
     for (int jj = 1; jj < ny - 1; ++jj) {
         const int row       = jj * nx;
         const int row_north = (jj + 1) * nx;

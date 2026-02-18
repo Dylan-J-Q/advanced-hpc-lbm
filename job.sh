@@ -1,9 +1,11 @@
 #!/bin/bash
+#SBATCH --job-name=this-is-a-job-name
 #SBATCH --nodes=1
 #SBATCH --time=00:10:00
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=144
 #SBATCH --exclusive 
 #SBATCH --ntasks-per-node=1
+
 
 
 make
