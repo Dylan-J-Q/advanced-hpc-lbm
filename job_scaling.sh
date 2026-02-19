@@ -16,7 +16,7 @@ export OMP_DYNAMIC=false
 export OMP_NESTED=false
 export OMP_MAX_ACTIVE_LEVELS=1
 
-THREADS=(1 2 4 8 16 32 64 128 144)
+THREADS=(16 32 64 128 144)
 
 for t in "${THREADS[@]}"
 do
