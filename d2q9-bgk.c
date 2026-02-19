@@ -196,288 +196,153 @@ int main(int argc, char* argv[])
 }
 
 int timestep(const t_param params,
-             t_speed* cells,
-             t_speed* tmp_cells,
-             int* obstacles,
-             float *av_vels)
+             t_speed* restrict cells,
+             t_speed* restrict tmp_cells,
+             int* restrict obstacles,
+             float* restrict av_vels)
 {
     const int nx = params.nx;
     const int ny = params.ny;
-    const int n  = nx * ny;
 
-    // Constants used every timestep
     const float omega = params.omega;
 
-    // accelerate constants (row + weights)
     const int acc_jj  = ny - 2;
     const int acc_row = acc_jj * nx;
     const float w1 = params.density * params.accel / 9.f;
     const float w2 = params.density * params.accel / 36.f;
 
-    float tot_u = 0.f;
-    int tot_cells = 0;
+    // Pull SoA pointers once
+    float * restrict c0 = cells->speeds[0];
+    float * restrict c1 = cells->speeds[1];
+    float * restrict c2 = cells->speeds[2];
+    float * restrict c3 = cells->speeds[3];
+    float * restrict c4 = cells->speeds[4];
+    float * restrict c5 = cells->speeds[5];
+    float * restrict c6 = cells->speeds[6];
+    float * restrict c7 = cells->speeds[7];
+    float * restrict c8 = cells->speeds[8];
+
+    float * restrict t0 = tmp_cells->speeds[0];
+    float * restrict t1 = tmp_cells->speeds[1];
+    float * restrict t2 = tmp_cells->speeds[2];
+    float * restrict t3 = tmp_cells->speeds[3];
+    float * restrict t4 = tmp_cells->speeds[4];
+    float * restrict t5 = tmp_cells->speeds[5];
+    float * restrict t6 = tmp_cells->speeds[6];
+    float * restrict t7 = tmp_cells->speeds[7];
+    float * restrict t8 = tmp_cells->speeds[8];
+
+    const int * restrict obs_arr = (const int*)obstacles;
+
+    float tot_u_step = 0.f;
+    int   tot_cells_step = 0;
+
     #pragma omp parallel
     {
         for (int tt = 0; tt < params.maxIters; ++tt)
         {
-            //accelerate flow
-            #pragma omp for schedule(static)
+            //av velocity
+            #pragma omp for simd schedule(static)
             for (int ii = 0; ii < nx; ++ii) {
                 const int idx = acc_row + ii;
 
-                if (!obstacles[idx]
-                    && (cells->speeds[3][idx] - w1) > 0.f
-                    && (cells->speeds[6][idx] - w2) > 0.f
-                    && (cells->speeds[7][idx] - w2) > 0.f)
+                if (!obs_arr[idx]
+                    && (c3[idx] - w1) > 0.f
+                    && (c6[idx] - w2) > 0.f
+                    && (c7[idx] - w2) > 0.f)
                 {
-                    cells->speeds[1][idx] += w1;
-                    cells->speeds[5][idx] += w2;
-                    cells->speeds[8][idx] += w2;
-
-                    cells->speeds[3][idx] -= w1;
-                    cells->speeds[6][idx] -= w2;
-                    cells->speeds[7][idx] -= w2;
-                }
-            }
-            
-            //interior collide
-            #pragma omp for schedule(static) nowait
-            for (int jj = 1; jj < ny - 1; ++jj) {
-                const int row       = jj * nx;
-                const int row_north = (jj + 1) * nx;
-                const int row_south = (jj - 1) * nx;
-
-                for (int ii = 1; ii < nx - 1; ++ii) {
-                    const int idx = row + ii;
-
-                    float r0 = cells->speeds[0][idx];
-                    float r1 = cells->speeds[1][idx - 1];
-                    float r2 = cells->speeds[2][row_south + ii];
-                    float r3 = cells->speeds[3][idx + 1];
-                    float r4 = cells->speeds[4][row_north + ii];
-                    float r5 = cells->speeds[5][row_south + ii - 1];
-                    float r6 = cells->speeds[6][row_south + ii + 1];
-                    float r7 = cells->speeds[7][row_north + ii + 1];
-                    float r8 = cells->speeds[8][row_north + ii - 1];
-
-                    const int obs = obstacles[idx];
-
-                    float s0 = r0;
-                    float s1 = obs ? r3 : r1;
-                    float s2 = obs ? r4 : r2;
-                    float s3 = obs ? r1 : r3;
-                    float s4 = obs ? r2 : r4;
-                    float s5 = obs ? r7 : r5;
-                    float s6 = obs ? r8 : r6;
-                    float s7 = obs ? r5 : r7;
-                    float s8 = obs ? r6 : r8;
-
-                    collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                                    &tmp_cells->speeds[0][idx], &tmp_cells->speeds[1][idx], &tmp_cells->speeds[2][idx],
-                                    &tmp_cells->speeds[3][idx], &tmp_cells->speeds[4][idx], &tmp_cells->speeds[5][idx],
-                                    &tmp_cells->speeds[6][idx], &tmp_cells->speeds[7][idx], &tmp_cells->speeds[8][idx]);
+                    c1[idx] += w1; c5[idx] += w2; c8[idx] += w2;
+                    c3[idx] -= w1; c6[idx] -= w2; c7[idx] -= w2;
                 }
             }
 
-            //top bottom row collide
-            #pragma omp for schedule(static) nowait
-            for (int ii = 0; ii < nx; ++ii) {
-                const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
-                const int ii_e = (ii == nx-1) ? 0      : ii + 1;
-
-                // top row (jj = 0)
-                {
-                    const int idx = ii;
-                    const int row_north = nx;
-                    const int row_south = (ny - 1) * nx;
-
-                    float r0 = cells->speeds[0][idx];
-                    float r1 = cells->speeds[1][ii_w];
-                    float r2 = cells->speeds[2][row_south + ii];
-                    float r3 = cells->speeds[3][ii_e];
-                    float r4 = cells->speeds[4][row_north + ii];
-                    float r5 = cells->speeds[5][row_south + ii_w];
-                    float r6 = cells->speeds[6][row_south + ii_e];
-                    float r7 = cells->speeds[7][row_north + ii_e];
-                    float r8 = cells->speeds[8][row_north + ii_w];
-
-                    const int obs = obstacles[idx];
-
-                    float s0 = r0;
-                    float s1 = obs ? r3 : r1;
-                    float s2 = obs ? r4 : r2;
-                    float s3 = obs ? r1 : r3;
-                    float s4 = obs ? r2 : r4;
-                    float s5 = obs ? r7 : r5;
-                    float s6 = obs ? r8 : r6;
-                    float s7 = obs ? r5 : r7;
-                    float s8 = obs ? r6 : r8;
-
-                    collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                                    &tmp_cells->speeds[0][idx], &tmp_cells->speeds[1][idx], &tmp_cells->speeds[2][idx],
-                                    &tmp_cells->speeds[3][idx], &tmp_cells->speeds[4][idx], &tmp_cells->speeds[5][idx],
-                                    &tmp_cells->speeds[6][idx], &tmp_cells->speeds[7][idx], &tmp_cells->speeds[8][idx]);
-                }
-
-                // bottom row (jj = ny-1)
-                {
-                    const int jj = ny - 1;
-                    const int row = jj * nx;
-                    const int idx = row + ii;
-
-                    const int row_north = 0;
-                    const int row_south = (jj - 1) * nx;
-
-                    float r0 = cells->speeds[0][idx];
-                    float r1 = cells->speeds[1][row + ii_w];
-                    float r2 = cells->speeds[2][row_south + ii];
-                    float r3 = cells->speeds[3][row + ii_e];
-                    float r4 = cells->speeds[4][row_north + ii];
-                    float r5 = cells->speeds[5][row_south + ii_w];
-                    float r6 = cells->speeds[6][row_south + ii_e];
-                    float r7 = cells->speeds[7][row_north + ii_e];
-                    float r8 = cells->speeds[8][row_north + ii_w];
-
-                    const int obs = obstacles[idx];
-
-                    float s0 = r0;
-                    float s1 = obs ? r3 : r1;
-                    float s2 = obs ? r4 : r2;
-                    float s3 = obs ? r1 : r3;
-                    float s4 = obs ? r2 : r4;
-                    float s5 = obs ? r7 : r5;
-                    float s6 = obs ? r8 : r6;
-                    float s7 = obs ? r5 : r7;
-                    float s8 = obs ? r6 : r8;
-
-                    collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                                    &tmp_cells->speeds[0][idx], &tmp_cells->speeds[1][idx], &tmp_cells->speeds[2][idx],
-                                    &tmp_cells->speeds[3][idx], &tmp_cells->speeds[4][idx], &tmp_cells->speeds[5][idx],
-                                    &tmp_cells->speeds[6][idx], &tmp_cells->speeds[7][idx], &tmp_cells->speeds[8][idx]);
-                }
-            }
-
-            //left right column collide
-            #pragma omp for schedule(static) nowait
-            for (int jj = 1; jj < ny - 1; ++jj) {
-                const int row       = jj * nx;
-                const int row_north = (jj + 1) * nx;
-                const int row_south = (jj - 1) * nx;
-
-                // left column (ii=0)
-                {
-                    const int idx  = row;
-                    const int ii_w = nx - 1;
-                    const int ii_e = 1;
-
-                    float r0 = cells->speeds[0][idx];
-                    float r1 = cells->speeds[1][row + ii_w];
-                    float r2 = cells->speeds[2][row_south + 0];
-                    float r3 = cells->speeds[3][row + ii_e];
-                    float r4 = cells->speeds[4][row_north + 0];
-                    float r5 = cells->speeds[5][row_south + ii_w];
-                    float r6 = cells->speeds[6][row_south + ii_e];
-                    float r7 = cells->speeds[7][row_north + ii_e];
-                    float r8 = cells->speeds[8][row_north + ii_w];
-
-                    const int obs = obstacles[idx];
-
-                    float s0 = r0;
-                    float s1 = obs ? r3 : r1;
-                    float s2 = obs ? r4 : r2;
-                    float s3 = obs ? r1 : r3;
-                    float s4 = obs ? r2 : r4;
-                    float s5 = obs ? r7 : r5;
-                    float s6 = obs ? r8 : r6;
-                    float s7 = obs ? r5 : r7;
-                    float s8 = obs ? r6 : r8;
-
-                    collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                                    &tmp_cells->speeds[0][idx], &tmp_cells->speeds[1][idx], &tmp_cells->speeds[2][idx],
-                                    &tmp_cells->speeds[3][idx], &tmp_cells->speeds[4][idx], &tmp_cells->speeds[5][idx],
-                                    &tmp_cells->speeds[6][idx], &tmp_cells->speeds[7][idx], &tmp_cells->speeds[8][idx]);
-                }
-
-                // right column (ii=nx-1)
-                {
-                    const int ii  = nx - 1;
-                    const int idx = row + ii;
-                    const int ii_w = ii - 1;
-                    const int ii_e = 0;
-
-                    float r0 = cells->speeds[0][idx];
-                    float r1 = cells->speeds[1][row + ii_w];
-                    float r2 = cells->speeds[2][row_south + ii];
-                    float r3 = cells->speeds[3][row + ii_e];
-                    float r4 = cells->speeds[4][row_north + ii];
-                    float r5 = cells->speeds[5][row_south + ii_w];
-                    float r6 = cells->speeds[6][row_south + ii_e];
-                    float r7 = cells->speeds[7][row_north + ii_e];
-                    float r8 = cells->speeds[8][row_north + ii_w];
-
-                    const int obs = obstacles[idx];
-
-                    float s0 = r0;
-                    float s1 = obs ? r3 : r1;
-                    float s2 = obs ? r4 : r2;
-                    float s3 = obs ? r1 : r3;
-                    float s4 = obs ? r2 : r4;
-                    float s5 = obs ? r7 : r5;
-                    float s6 = obs ? r8 : r6;
-                    float s7 = obs ? r5 : r7;
-                    float s8 = obs ? r6 : r8;
-
-                    collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                                    &tmp_cells->speeds[0][idx], &tmp_cells->speeds[1][idx], &tmp_cells->speeds[2][idx],
-                                    &tmp_cells->speeds[3][idx], &tmp_cells->speeds[4][idx], &tmp_cells->speeds[5][idx],
-                                    &tmp_cells->speeds[6][idx], &tmp_cells->speeds[7][idx], &tmp_cells->speeds[8][idx]);
-                }
-            }
-
+            //reset
+            #pragma omp single
+            { tot_u_step = 0.f; tot_cells_step = 0; }
             #pragma omp barrier
 
-            //av velocity
-            #pragma omp for reduction(+:tot_u,tot_cells) schedule(static)
-            for (int idx = 0; idx < n; ++idx) {
-                if (obstacles[idx]) continue;
+            //fused loop collision, propagate and rebound
+            #pragma omp for collapse(2) schedule(static) reduction(+:tot_u_step, tot_cells_step)
+            for (int jj = 0; jj < ny; ++jj) {
+                for (int ii = 0; ii < nx; ++ii) {
+                    const int j_n = (jj == ny - 1) ? 0      : (jj + 1);
+                    const int j_s = (jj == 0)      ? (ny-1) : (jj - 1);
 
-                float s0 = tmp_cells->speeds[0][idx];
-                float s1 = tmp_cells->speeds[1][idx];
-                float s2 = tmp_cells->speeds[2][idx];
-                float s3 = tmp_cells->speeds[3][idx];
-                float s4 = tmp_cells->speeds[4][idx];
-                float s5 = tmp_cells->speeds[5][idx];
-                float s6 = tmp_cells->speeds[6][idx];
-                float s7 = tmp_cells->speeds[7][idx];
-                float s8 = tmp_cells->speeds[8][idx];
+                    const int i_w = (ii == 0)      ? (nx-1) : (ii - 1);
+                    const int i_e = (ii == nx - 1) ? 0      : (ii + 1);
 
-                float rho = s0+s1+s2+s3+s4+s5+s6+s7+s8;
-                float inv_rho = 1.f / rho;
-                float ux = (s1+s5+s8 - (s3+s6+s7)) * inv_rho;
-                float uy = (s2+s5+s6 - (s4+s7+s8)) * inv_rho;
+                    const int row   = jj  * nx;
+                    const int row_n = j_n * nx;
+                    const int row_s = j_s * nx;
+                    const int idx   = row + ii;
 
-                tot_u += sqrtf(ux*ux + uy*uy);
-                tot_cells++;
+                    const float r0 = c0[idx];
+                    const float r1 = c1[row   + i_w];
+                    const float r2 = c2[row_s + ii ];
+                    const float r3 = c3[row   + i_e];
+                    const float r4 = c4[row_n + ii ];
+                    const float r5 = c5[row_s + i_w];
+                    const float r6 = c6[row_s + i_e];
+                    const float r7 = c7[row_n + i_e];
+                    const float r8 = c8[row_n + i_w];
+
+                    const int obs = obs_arr[idx];
+
+                    const float s0 = r0;
+                    const float s1 = obs ? r3 : r1;
+                    const float s2 = obs ? r4 : r2;
+                    const float s3 = obs ? r1 : r3;
+                    const float s4 = obs ? r2 : r4;
+                    const float s5 = obs ? r7 : r5;
+                    const float s6 = obs ? r8 : r6;
+                    const float s7 = obs ? r5 : r7;
+                    const float s8 = obs ? r6 : r8;
+
+                    float o0,o1,o2,o3,o4,o5,o6,o7,o8;
+                    collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
+                                    &o0,&o1,&o2,&o3,&o4,&o5,&o6,&o7,&o8);
+
+                    t0[idx]=o0; t1[idx]=o1; t2[idx]=o2; t3[idx]=o3; t4[idx]=o4;
+                    t5[idx]=o5; t6[idx]=o6; t7[idx]=o7; t8[idx]=o8;
+
+                    if (!obs) {
+                        float rho = o0+o1+o2+o3+o4+o5+o6+o7+o8;
+                        if (rho <= 1e-20f) rho = 1e-20f;
+                        const float inv_rho = 1.f / rho;
+
+                        const float ux = (o1+o5+o8 - (o3+o6+o7)) * inv_rho;
+                        const float uy = (o2+o5+o6 - (o4+o7+o8)) * inv_rho;
+
+                        tot_u_step += sqrtf(ux*ux + uy*uy);
+                        tot_cells_step += 1;
+                    }
+                }
             }
 
-            // One thread stores av_vel and swaps buffers
             #pragma omp single
             {
-                av_vels[tt] = (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
+                //swap pointers
+                av_vels[tt] = (tot_cells_step > 0) ? (tot_u_step / (float)tot_cells_step) : 0.f;
 
                 t_speed temp = *cells;
                 *cells = *tmp_cells;
                 *tmp_cells = temp;
+
+                c0 = cells->speeds[0]; c1 = cells->speeds[1]; c2 = cells->speeds[2];
+                c3 = cells->speeds[3]; c4 = cells->speeds[4]; c5 = cells->speeds[5];
+                c6 = cells->speeds[6]; c7 = cells->speeds[7]; c8 = cells->speeds[8];
+
+                t0 = tmp_cells->speeds[0]; t1 = tmp_cells->speeds[1]; t2 = tmp_cells->speeds[2];
+                t3 = tmp_cells->speeds[3]; t4 = tmp_cells->speeds[4]; t5 = tmp_cells->speeds[5];
+                t6 = tmp_cells->speeds[6]; t7 = tmp_cells->speeds[7]; t8 = tmp_cells->speeds[8];
             }
-            tot_u = 0.f;
-            tot_cells = 0;
-            // Ensure swap is visible before next timestep
             #pragma omp barrier
-        } // tt loop
-    } // parallel
+        }
+    }
 
     return EXIT_SUCCESS;
 }
+
 
 
 static inline void collide_or_copy(
