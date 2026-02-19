@@ -54,6 +54,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <omp.h>
 
 #define NSPEEDS         9
 #define FINALSTATEFILE  "final_state.dat"
@@ -100,11 +101,11 @@ static inline void collide_cell(
     float *out_speed   /* optional: |u| written here if non-NULL */
 );
 
-int accelerate_flow(const t_param params,
-                    t_speed * restrict cells,
-                    int     * restrict obstacles);
+static void accelerate_flow(const t_param params,
+                                t_speed * restrict cells,
+                                int     * restrict obstacles);
 
-float propagate_rebound_collide_avvel(
+static void fused_kernel(
     const t_param params,
     const float * restrict c0, const float * restrict c1,
     const float * restrict c2, const float * restrict c3,
@@ -116,10 +117,10 @@ float propagate_rebound_collide_avvel(
     float * restrict o4, float * restrict o5,
     float * restrict o6, float * restrict o7,
     float * restrict o8,
-    const int * restrict obstacles);                    
-float timestep(const t_param params,
-               t_speed *cells, t_speed *tmp_cells,
-               int *obstacles);
+    const int * restrict obstacles,
+    float *local_tot_u,
+    int   *local_tot_cells);                    
+
 float av_velocity(const t_param params,
               float * restrict c0,
               float * restrict c1,
@@ -176,34 +177,95 @@ int main(int argc, char *argv[])
     initialise(paramfile, obstaclefile, &params,
                &cells, &tmp_cells, &obstacles, &av_vels);
 
-    /* First-touch NUMA initialisation: re-touch all arrays in parallel
-       with the same schedule the compute will use, so the OS maps pages
-       to the NUMA node local to the thread that will own them.          */
-    {
-        const int n = params.nx * params.ny;
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < n; i++) {
-            for (int d = 0; d < 9; d++) {
-                cells->speeds[d][i]     = cells->speeds[d][i];
-                tmp_cells->speeds[d][i] = tmp_cells->speeds[d][i];
-            }
-            obstacles[i] = obstacles[i];
+    const int nthreads = omp_get_max_threads();
+
+    /*
+     * Per-thread accumulator arrays — one slot per thread, padded to a
+     * full cache line (64 bytes = 16 floats) to prevent false sharing.
+     * Without padding, threads writing adjacent slots in a tight loop
+     * would ping-pong the same cache line between cores.
+     */
+    #define CACHE_LINE_FLOATS 16
+    float *thread_tot_u     = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(float));
+    int   *thread_tot_cells = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(int));
+
+    /* First-touch NUMA init: parallel loop with same schedule as compute */
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < params.nx * params.ny; i++) {
+        for (int d = 0; d < NSPEEDS; d++) {
+            cells->speeds[d][i]     = cells->speeds[d][i];
+            tmp_cells->speeds[d][i] = tmp_cells->speeds[d][i];
         }
+        obstacles[i] = obstacles[i];
     }
 
     gettimeofday(&timstr, NULL);
     init_toc = comp_tic = timstr.tv_sec + timstr.tv_usec / 1000000.0;
 
-    for (int tt = 0; tt < params.maxIters; tt++)
+    /*
+     * PERSISTENT PARALLEL REGION
+     * ---------------------------
+     * One fork, one join for the entire simulation.
+     * Each timestep inside costs only:
+     *   - 2x #pragma omp for barriers (accel + fused kernel)
+     *   - 1x #pragma omp barrier  (before reduction/swap)
+     *   - 1x #pragma omp single   (reduction + pointer swap)
+     *   - 1x implicit barrier at end of omp single
+     * Total: ~4 barriers per timestep, all purely synchronisation —
+     * zero locking, zero lock contention.
+     */
+    #pragma omp parallel default(none) \
+            shared(params, cells, tmp_cells, obstacles, av_vels, \
+                   thread_tot_u, thread_tot_cells, \
+                   comp_toc, col_tic, col_toc, tot_toc)
     {
-        av_vels[tt] = timestep(params, cells, tmp_cells, obstacles);
+        const int tid = omp_get_thread_num();
+
+        float *my_tot_u     = &thread_tot_u    [tid * CACHE_LINE_FLOATS];
+        int   *my_tot_cells = &thread_tot_cells [tid * CACHE_LINE_FLOATS];
+
+        for (int tt = 0; tt < params.maxIters; tt++)
+        {
+            accelerate_flow(params, cells, obstacles);
+
+            fused_kernel(
+                params,
+                cells->speeds[0], cells->speeds[1], cells->speeds[2],
+                cells->speeds[3], cells->speeds[4], cells->speeds[5],
+                cells->speeds[6], cells->speeds[7], cells->speeds[8],
+                tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
+                tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
+                tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8],
+                obstacles,
+                my_tot_u, my_tot_cells);
+
+            #pragma omp barrier
+
+            #pragma omp single
+            {
+                float tot_u     = 0.f;
+                int   tot_cells = 0;
+                for (int t = 0; t < nthreads; t++) {
+                    tot_u     += thread_tot_u    [t * CACHE_LINE_FLOATS];
+                    tot_cells += thread_tot_cells [t * CACHE_LINE_FLOATS];
+                }
+                av_vels[tt] = (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
+
+                t_speed temp = *cells;
+                *cells       = *tmp_cells;
+                *tmp_cells   = temp;
+            }
 
 #ifdef DEBUG
-        printf("==timestep: %d==\n", tt);
-        printf("av velocity: %.12E\n", av_vels[tt]);
-        printf("tot density: %.12E\n", total_density(params, cells));
+            #pragma omp single
+            {
+                printf("==timestep: %d==\n", tt);
+                printf("av velocity: %.12E\n", av_vels[tt]);
+                printf("tot density: %.12E\n", total_density(params, cells));
+            }
 #endif
-    }
+        }
+    } /* end persistent parallel region */
 
     gettimeofday(&timstr, NULL);
     comp_toc = col_tic = timstr.tv_sec + timstr.tv_usec / 1000000.0;
@@ -219,6 +281,9 @@ int main(int argc, char *argv[])
     printf("Elapsed Total time:\t\t\t%.6lf (s)\n",   tot_toc  - tot_tic);
     write_values(params, cells, obstacles, av_vels);
     finalise(&params, &cells, &tmp_cells, &obstacles, &av_vels);
+
+    free(thread_tot_u);
+    free(thread_tot_cells);
 
     return EXIT_SUCCESS;
 }
@@ -272,17 +337,16 @@ static inline void collide_cell(
     if (out_speed) *out_speed = sqrtf(u2);
 }
 
-int accelerate_flow(const t_param params,
-                    t_speed * restrict cells,
-                    int     * restrict obstacles)
+static void accelerate_flow(const t_param params,
+                                t_speed * restrict cells,
+                                int     * restrict obstacles)
 {
-    float w1 = params.density * params.accel / 9.f;
-    float w2 = params.density * params.accel / 36.f;
+    const float w1 = params.density * params.accel / 9.f;
+    const float w2 = params.density * params.accel / 36.f;
+    const int   jj  = params.ny - 2;
+    const int   row = jj * params.nx;
 
-    int jj  = params.ny - 2;
-    int row = jj * params.nx;
-
-    #pragma omp parallel for schedule(static)
+    #pragma omp for schedule(static)
     for (int ii = 0; ii < params.nx; ii++)
     {
         int idx = ii + row;
@@ -299,10 +363,9 @@ int accelerate_flow(const t_param params,
             cells->speeds[7][idx] -= w2;
         }
     }
-    return EXIT_SUCCESS;
 }
 
-float propagate_rebound_collide_avvel(
+static void fused_kernel(
     const t_param params,
     const float * restrict c0, const float * restrict c1,
     const float * restrict c2, const float * restrict c3,
@@ -314,41 +377,59 @@ float propagate_rebound_collide_avvel(
     float * restrict o4, float * restrict o5,
     float * restrict o6, float * restrict o7,
     float * restrict o8,
-    const int * restrict obstacles)
+    const int * restrict obstacles,
+    float *local_tot_u,
+    int   *local_tot_cells)
 {
     const int   nx    = params.nx;
     const int   ny    = params.ny;
     const float omega = params.omega;
 
-    float tot_u     = 0.f;
-    int   tot_cells = 0;
+    float my_tot_u     = 0.f;
+    int   my_tot_cells = 0;
 
-
-    #pragma omp parallel for collapse(2) schedule(static) \
-            reduction(+:tot_u) reduction(+:tot_cells)
+    /*
+     * Parallelise over rows only.
+     *
+     * Removing collapse(2) eliminates:
+     *  - the modulo/division to recover jj,ii from a linear index
+     *  - the omp_test_nest_lock calls (58% of runtime in the profile)
+     *  - the associated cache thrashing
+     *
+     * No reduction clause — we accumulate into local variables and
+     * write to the caller's per-thread slot after the loop. The
+     * final tree-reduction is done serially in an 'omp single' block
+     * using a shared array, with zero lock contention.
+     */
+    #pragma omp for schedule(static) nowait
     for (int jj = 0; jj < ny; jj++)
     {
+        const int jj_n = (jj + 1 == ny) ? 0      : jj + 1;
+        const int jj_s = (jj == 0)      ? ny - 1 : jj - 1;
+
+        const int row   = jj   * nx;
+        const int row_n = jj_n * nx;
+        const int row_s = jj_s * nx;
+
         for (int ii = 0; ii < nx; ii++)
         {
-            const int jj_n = (jj + 1 == ny) ? 0      : jj + 1;
-            const int jj_s = (jj == 0)      ? ny - 1 : jj - 1;
             const int ii_e = (ii + 1 == nx) ? 0      : ii + 1;
             const int ii_w = (ii == 0)      ? nx - 1 : ii - 1;
 
-            const int idx = jj * nx + ii;
+            const int idx = row + ii;
 
-
+            /* stream */
             float r0 = c0[idx];
-            float r1 = c1[jj   * nx + ii_w];
-            float r2 = c2[jj_s * nx + ii  ];
-            float r3 = c3[jj   * nx + ii_e];
-            float r4 = c4[jj_n * nx + ii  ];
-            float r5 = c5[jj_s * nx + ii_w];
-            float r6 = c6[jj_s * nx + ii_e];
-            float r7 = c7[jj_n * nx + ii_e];
-            float r8 = c8[jj_n * nx + ii_w];
+            float r1 = c1[row   + ii_w];
+            float r2 = c2[row_s + ii  ];
+            float r3 = c3[row   + ii_e];
+            float r4 = c4[row_n + ii  ];
+            float r5 = c5[row_s + ii_w];
+            float r6 = c6[row_s + ii_e];
+            float r7 = c7[row_n + ii_e];
+            float r8 = c8[row_n + ii_w];
 
-
+            /* bounce-back */
             const int obs = obstacles[idx];
             float s0 = r0;
             float s1 = obs ? r3 : r1;
@@ -360,7 +441,7 @@ float propagate_rebound_collide_avvel(
             float s7 = obs ? r5 : r7;
             float s8 = obs ? r6 : r8;
 
-
+            /* collide or copy */
             if (obs) {
                 o0[idx]=s0; o1[idx]=s1; o2[idx]=s2;
                 o3[idx]=s3; o4[idx]=s4; o5[idx]=s5;
@@ -373,38 +454,16 @@ float propagate_rebound_collide_avvel(
                              &o3[idx],&o4[idx],&o5[idx],
                              &o6[idx],&o7[idx],&o8[idx],
                              &spd);
-                tot_u     += spd;
-                tot_cells += 1;
+                my_tot_u     += spd;
+                my_tot_cells += 1;
             }
         }
     }
+    /* nowait — no implicit barrier here; caller inserts an explicit   */
+    /* barrier before reading these values in the single block.        */
 
-
-    return (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
-}
-
-
-float timestep(const t_param params,
-               t_speed *cells, t_speed *tmp_cells,
-               int *obstacles)
-{
-    accelerate_flow(params, cells, obstacles);
-
-    float av = propagate_rebound_collide_avvel(
-        params,
-        cells->speeds[0],     cells->speeds[1],     cells->speeds[2],
-        cells->speeds[3],     cells->speeds[4],      cells->speeds[5],
-        cells->speeds[6],     cells->speeds[7],      cells->speeds[8],
-        tmp_cells->speeds[0], tmp_cells->speeds[1],  tmp_cells->speeds[2],
-        tmp_cells->speeds[3], tmp_cells->speeds[4],  tmp_cells->speeds[5],
-        tmp_cells->speeds[6], tmp_cells->speeds[7],  tmp_cells->speeds[8],
-        obstacles);
-
-    t_speed temp = *cells;
-    *cells     = *tmp_cells;
-    *tmp_cells = temp;
-
-    return av;
+    *local_tot_u     = my_tot_u;
+    *local_tot_cells = my_tot_cells;
 }
 
 float av_velocity(const t_param params,
