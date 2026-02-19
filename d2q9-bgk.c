@@ -84,14 +84,22 @@ typedef struct
 /* load params, allocate memory, load obstacles & initialise fluid particle densities */
 int initialise(const char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
-               int** obstacles_ptr, float** av_vels_ptr);
+               int** obstacles_ptr, float** av_vels_ptr,
+               int** fluid_idx_ptr, int* n_fluid_ptr);
+
 
 /*
 ** The main calculation methods.
 ** timestep calls, in order, the functions:
 ** accelerate_flow(), propagate(), rebound() & collision()
 */
-  int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles, float *av_vels);
+int timestep(const t_param params,
+             t_speed* restrict cells,
+             t_speed* restrict tmp_cells,
+             int* restrict obstacles,
+             const int* restrict fluid_idx,
+             int n_fluid,
+             float* restrict av_vels);
 
 float av_velocity(const t_param params,
               float * restrict c0,
@@ -160,7 +168,11 @@ int main(int argc, char* argv[])
   gettimeofday(&timstr, NULL);
   tot_tic = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   init_tic=tot_tic;
-  initialise(paramfile, obstaclefile, &params, &cells, &tmp_cells, &obstacles, &av_vels);
+  int* fluid_idx = NULL;
+  int  n_fluid   = 0;
+
+  initialise(paramfile, obstaclefile, &params, &cells, &tmp_cells,
+           &obstacles, &av_vels, &fluid_idx, &n_fluid);
 
   /* Init time stops here, compute time starts*/
   gettimeofday(&timstr, NULL);
@@ -168,7 +180,8 @@ int main(int argc, char* argv[])
   comp_tic=init_toc;
 
   //calculate
-  timestep(params, cells, tmp_cells, obstacles, av_vels);
+
+  timestep(params, cells, tmp_cells, obstacles, fluid_idx, n_fluid, av_vels);
   
   /* Compute time stops here, collate time starts*/
   gettimeofday(&timstr, NULL);
@@ -199,6 +212,8 @@ int timestep(const t_param params,
              t_speed* restrict cells,
              t_speed* restrict tmp_cells,
              int* restrict obstacles,
+             const int* restrict fluid_idx,
+             int n_fluid,
              float* restrict av_vels)
 {
     const int nx = params.nx;
@@ -261,20 +276,78 @@ int timestep(const t_param params,
             { tot_u_step = 0.f; tot_cells_step = 0; }
             #pragma omp barrier
 
-            //fused loop collision, propagate and rebound
-            #pragma omp for collapse(2) schedule(static) reduction(+:tot_u_step, tot_cells_step)
-            for (int jj = 0; jj < ny; ++jj) {
-                for (int ii = 0; ii < nx; ++ii) {
+            //obstacle pass
+            enum { TJ = 8, TI = 128 };   // tune: try TJ=4/8/16, TI=64/128/256
+
+            #pragma omp for collapse(2) schedule(static)
+            for (int jb = 0; jb < ny; jb += TJ) {
+                for (int ib = 0; ib < nx; ib += TI) {
+
+                    const int jmax = (jb + TJ < ny) ? (jb + TJ) : ny;
+                    const int imax = (ib + TI < nx) ? (ib + TI) : nx;
+
+                    for (int jj = jb; jj < jmax; ++jj) {
+                        const int j_n = (jj == ny - 1) ? 0      : (jj + 1);
+                        const int j_s = (jj == 0)      ? (ny-1) : (jj - 1);
+
+                        const int row   = jj  * nx;
+                        const int row_n = j_n * nx;
+                        const int row_s = j_s * nx;
+
+                        for (int ii = ib; ii < imax; ++ii) {
+                            const int idx = row + ii;
+                            if (!obs_arr[idx]) continue;  // only obstacles
+
+                            const int i_w = (ii == 0)      ? (nx-1) : (ii - 1);
+                            const int i_e = (ii == nx - 1) ? 0      : (ii + 1);
+
+                            // stream (pull)
+                            const float r0 = c0[idx];
+                            const float r1 = c1[row   + i_w];
+                            const float r2 = c2[row_s + ii ];
+                            const float r3 = c3[row   + i_e];
+                            const float r4 = c4[row_n + ii ];
+                            const float r5 = c5[row_s + i_w];
+                            const float r6 = c6[row_s + i_e];
+                            const float r7 = c7[row_n + i_e];
+                            const float r8 = c8[row_n + i_w];
+
+                            // obstacle bounce-back
+                            t0[idx] = r0;
+                            t1[idx] = r3;
+                            t2[idx] = r4;
+                            t3[idx] = r1;
+                            t4[idx] = r2;
+                            t5[idx] = r7;
+                            t6[idx] = r8;
+                            t7[idx] = r5;
+                            t8[idx] = r6;
+                        }
+                    }
+                }
+            }
+
+            //fluid pass
+            enum { PF = 8192 };   // tune: 2048/4096/8192/16384
+
+            #pragma omp for schedule(static) reduction(+:tot_u_step, tot_cells_step)
+            for (int pb = 0; pb < n_fluid; pb += PF) {
+                const int pmax = (pb + PF < n_fluid) ? (pb + PF) : n_fluid;
+
+                for (int p = pb; p < pmax; ++p) {
+                    const int idx = fluid_idx[p];
+
+                    const int jj = idx / nx;
+                    const int ii = idx - jj * nx;
+
                     const int j_n = (jj == ny - 1) ? 0      : (jj + 1);
                     const int j_s = (jj == 0)      ? (ny-1) : (jj - 1);
-
                     const int i_w = (ii == 0)      ? (nx-1) : (ii - 1);
                     const int i_e = (ii == nx - 1) ? 0      : (ii + 1);
 
                     const int row   = jj  * nx;
                     const int row_n = j_n * nx;
                     const int row_s = j_s * nx;
-                    const int idx   = row + ii;
 
                     const float r0 = c0[idx];
                     const float r1 = c1[row   + i_w];
@@ -286,38 +359,25 @@ int timestep(const t_param params,
                     const float r7 = c7[row_n + i_e];
                     const float r8 = c8[row_n + i_w];
 
-                    const int obs = obs_arr[idx];
-
-                    const float s0 = r0;
-                    const float s1 = obs ? r3 : r1;
-                    const float s2 = obs ? r4 : r2;
-                    const float s3 = obs ? r1 : r3;
-                    const float s4 = obs ? r2 : r4;
-                    const float s5 = obs ? r7 : r5;
-                    const float s6 = obs ? r8 : r6;
-                    const float s7 = obs ? r5 : r7;
-                    const float s8 = obs ? r6 : r8;
-
                     float o0,o1,o2,o3,o4,o5,o6,o7,o8;
-                    collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
+                    collide_or_copy(0, omega, r0,r1,r2,r3,r4,r5,r6,r7,r8,
                                     &o0,&o1,&o2,&o3,&o4,&o5,&o6,&o7,&o8);
 
                     t0[idx]=o0; t1[idx]=o1; t2[idx]=o2; t3[idx]=o3; t4[idx]=o4;
                     t5[idx]=o5; t6[idx]=o6; t7[idx]=o7; t8[idx]=o8;
 
-                    if (!obs) {
-                        float rho = o0+o1+o2+o3+o4+o5+o6+o7+o8;
-                        if (rho <= 1e-20f) rho = 1e-20f;
-                        const float inv_rho = 1.f / rho;
+                    float rho = o0+o1+o2+o3+o4+o5+o6+o7+o8;
+                    if (rho <= 1e-20f) rho = 1e-20f;
+                    const float inv_rho = 1.f / rho;
 
-                        const float ux = (o1+o5+o8 - (o3+o6+o7)) * inv_rho;
-                        const float uy = (o2+o5+o6 - (o4+o7+o8)) * inv_rho;
+                    const float ux = (o1+o5+o8 - (o3+o6+o7)) * inv_rho;
+                    const float uy = (o2+o5+o6 - (o4+o7+o8)) * inv_rho;
 
-                        tot_u_step += sqrtf(ux*ux + uy*uy);
-                        tot_cells_step += 1;
-                    }
+                    tot_u_step += sqrtf(ux*ux + uy*uy);
+                    tot_cells_step += 1;
                 }
             }
+
 
             #pragma omp single
             {
@@ -456,7 +516,8 @@ float av_velocity(const t_param params,
 
 int initialise(const char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
-               int** obstacles_ptr, float** av_vels_ptr)
+               int** obstacles_ptr, float** av_vels_ptr,
+               int** fluid_idx_ptr, int* n_fluid_ptr)
 {
   char   message[1024];  /* message buffer */
   FILE*   fp;            /* file pointer */
@@ -616,6 +677,23 @@ int initialise(const char* paramfile, const char* obstaclefile,
 
   /* and close the file */
   fclose(fp);
+
+  //build the fluid index
+  int n_fluid = 0;
+  for (int idx = 0; idx < n_cells; ++idx) {
+    n_fluid += ((*obstacles_ptr)[idx] == 0);
+  }
+
+  int* fluid_idx = (int*)malloc((size_t)n_fluid * sizeof(int));
+  if (!fluid_idx) die("cannot allocate memory for fluid_idx", __LINE__, __FILE__);
+
+  int w = 0;
+  for (int idx = 0; idx < n_cells; ++idx) {
+    if ((*obstacles_ptr)[idx] == 0) fluid_idx[w++] = idx;
+  }
+
+  *fluid_idx_ptr = fluid_idx;
+  *n_fluid_ptr   = n_fluid;
 
   /*
   ** allocate space to hold a record of the avarage velocities computed
