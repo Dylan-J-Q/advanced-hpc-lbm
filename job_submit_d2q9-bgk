@@ -15,12 +15,19 @@ echo Slurm job ID is $SLURM_JOB_ID
 echo This job runs on the following machines:
 echo `echo $SLURM_JOB_NODELIST | uniq`
 
-GRID=128x128
+#GRID=128x128
 #GRID=128x256
 #GRID=256x256
 #GRID=1024x1024
 
-#! Run the executable
-./d2q9-bgk input_$GRID.params obstacles_$GRID.dat
-make check REF_AV_VELS_FILE=check/$GRID.av_vels.dat REF_FINAL_STATE_FILE=check/$GRID.final_state.dat
+make clean
+make
+# ./d2q9-bgk input_128x128.params obstacles_128x128.dat
+# make check REF_AV_VELS_FILE=check/128x128.av_vels.dat REF_FINAL_STATE_FILE=check/128x128.final_state.dat
+# ./d2q9-bgk input_128x256.params obstacles_128x256.dat
+# make check REF_AV_VELS_FILE=check/128x256.av_vels.dat REF_FINAL_STATE_FILE=check/128x256.final_state.dat
+# ./d2q9-bgk input_256x256.params obstacles_256x256.dat
+# make check REF_AV_VELS_FILE=check/256x256.av_vels.dat REF_FINAL_STATE_FILE=check/256x256.final_state.dat
+./d2q9-bgk input_1024x1024.params obstacles_1024x1024.dat
+make check REF_AV_VELS_FILE=check/1024x1024.av_vels.dat REF_FINAL_STATE_FILE=check/1024x1024.final_state.dat
 
