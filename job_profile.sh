@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=d2q9-perf
+#SBATCH --job-name=d2q9-bgk-perf
 #SBATCH --nodes=1
 #SBATCH --time=00:10:00
 #SBATCH --cpus-per-task=144
@@ -14,6 +14,9 @@ make
 export OMP_PROC_BIND=true
 export OMP_PLACES=cores
 export OMP_NUM_THREADS=144
+export OMP_DYNAMIC=false
+export OMP_NESTED=false
+export OMP_MAX_ACTIVE_LEVELS=1
 
 PARAMS="input_1024x1024.params"
 OBS="obstacles_1024x1024.dat"
@@ -21,8 +24,16 @@ OBS="obstacles_1024x1024.dat"
 OUTDIR="perf_out"
 mkdir -p "${OUTDIR}"
 
-perf record -F 999 -g --call-graph dwarf -o "${OUTDIR}/perf.data" -- \
-  ./d2q9-bgk "${PARAMS}" "${OBS}"
+perf stat \
+  -e cycles,instructions,cache-references,cache-misses,\
+L1-dcache-loads,L1-dcache-load-misses,\
+LLC-loads,LLC-load-misses,\
+branch-instructions,branch-misses,\
+stalled-cycles-frontend,stalled-cycles-backend \
+  -o "${OUTDIR}/perf_stat.txt" \
+  -- \
+  perf record -F 999 -g --call-graph dwarf -o "${OUTDIR}/perf.data" -- \
+    ./d2q9-bgk "${PARAMS}" "${OBS}"
 
 perf report --stdio -i "${OUTDIR}/perf.data" --no-children > "${OUTDIR}/perf_report.txt"
 
