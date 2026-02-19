@@ -151,6 +151,7 @@ void usage(const char* exe);
 
 /*
 ** main program:
+
 ** initialise, timestep loop, finalise
 */
 int main(int argc, char *argv[])
