@@ -186,21 +186,26 @@ int main(int argc, char* argv[])
   init_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   comp_tic=init_toc;
 
-  for (int tt = 0; tt < params.maxIters; tt++)
+  //for (int tt = 0; tt < 50; tt++)
+  #pragma omp parallel default(none) shared(params, cells, tmp_cells, obstacles, av_vels)
   {
-    timestep(params, cells, tmp_cells, obstacles);
-    av_vels[tt] = av_velocity(params,
-          cells->speeds[0], cells->speeds[1], cells->speeds[2],
-          cells->speeds[3], cells->speeds[4], cells->speeds[5],
-          cells->speeds[6], cells->speeds[7], cells->speeds[8],
-          obstacles);
-#ifdef DEBUG
-    printf("==timestep: %d==\n", tt);
-    printf("av velocity: %.12E\n", av_vels[tt]);
-    printf("tot density: %.12E\n", total_density(params, cells));
-#endif
+      for (int tt = 0; tt < params.maxIters; tt++)
+      {
+        timestep(params, cells, tmp_cells, obstacles);
+
+        float av = av_velocity(params,
+            cells->speeds[0], cells->speeds[1], cells->speeds[2],
+            cells->speeds[3], cells->speeds[4], cells->speeds[5],
+            cells->speeds[6], cells->speeds[7], cells->speeds[8],
+            obstacles);
+        
+        #pragma omp single
+        {
+          av_vels[tt] = av;
+        }
+        #pragma omp barrier
+    }
   }
-  
   /* Compute time stops here, collate time starts*/
   gettimeofday(&timstr, NULL);
   comp_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
@@ -230,6 +235,7 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
 {
     accelerate_flow(params, cells, obstacles);
 
+    #pragma omp barrier
     // stream + bounce-back + collide: read cells, write tmp
     propagate_rebound_collide(params,
         cells->speeds[0], cells->speeds[1], cells->speeds[2],
@@ -241,11 +247,16 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
         obstacles
     );
 
+    #pragma omp barrier
     // swap pointers
+    #pragma omp single
+    {
     t_speed temp = *cells;
     *cells = *tmp_cells;
     *tmp_cells = temp;
+    }
 
+    #pragma omp barrier
     return EXIT_SUCCESS;
 }
 
@@ -260,6 +271,7 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
   int jj = params.ny - 2;
   int row = jj * params.nx;
 
+  #pragma omp for
   for (int ii = 0; ii < params.nx; ii++)
   {
     int idx = ii + row;
@@ -372,6 +384,7 @@ int propagate_rebound_collide(
     const float omega = params.omega;
 
     //interior loop
+    #pragma omp for
     for (int jj = 1; jj < ny - 1; ++jj) {
         const int row       = jj * nx;
         const int row_north = (jj + 1) * nx;
@@ -421,7 +434,7 @@ int propagate_rebound_collide(
     const int row_bot        = jj_bot * nx;
     const int row_north_bot  = 0;
     const int row_south_bot  = (jj_bot - 1) * nx;
-
+    #pragma omp for
     for (int ii = 0; ii < nx; ++ii) {
         const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
         const int ii_e = (ii == nx-1) ? 0      : ii + 1;
@@ -496,6 +509,7 @@ int propagate_rebound_collide(
     }
 
     //left and right columns
+    #pragma omp for
     for (int jj = 1; jj < ny - 1; ++jj) {
         const int row       = jj * nx;
         const int row_north = (jj + 1) * nx;
@@ -579,47 +593,63 @@ float av_velocity(const t_param params,
               float * restrict c5,
               float * restrict c6,
               float * restrict c7,
-              float * restrict c8, 
+              float * restrict c8,
               const int* obstacles)
 {
-    const int nx = params.nx;
-    const int ny = params.ny;
-    const int n  = nx * ny;
+    const int n = params.nx * params.ny;
 
-    float tot_u = 0.f;
-    int tot_cells = 0;
+    /* shared storage so GCC allows reduction inside an outer parallel region */
+    static float g_tot_u;
+    static int   g_tot_cells;
+    static float g_avg;
 
+    #pragma omp single
+    {
+        g_tot_u = 0.f;
+        g_tot_cells = 0;
+        g_avg = 0.f;
+    }
+    #pragma omp barrier
+
+    #pragma omp for reduction(+:g_tot_u, g_tot_cells)
     for (int idx = 0; idx < n; ++idx)
     {
-        //skip obstacles
         if (obstacles[idx]) continue;
 
-        //load
-        float s0 = c0[idx];
-        float s1 = c1[idx];
-        float s2 = c2[idx];
-        float s3 = c3[idx];
-        float s4 = c4[idx];
-        float s5 = c5[idx];
-        float s6 = c6[idx];
-        float s7 = c7[idx];
-        float s8 = c8[idx];
+        const float s0 = c0[idx];
+        const float s1 = c1[idx];
+        const float s2 = c2[idx];
+        const float s3 = c3[idx];
+        const float s4 = c4[idx];
+        const float s5 = c5[idx];
+        const float s6 = c6[idx];
+        const float s7 = c7[idx];
+        const float s8 = c8[idx];
 
-        //compute density
         float rho = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
-        float inv_rho = 1.f / rho;
+        if (rho <= 1e-20f) rho = 1e-20f;
+        const float inv_rho = 1.f / rho;
 
-        //velocity components
-        float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
-        float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
+        const float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
+        const float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
 
-        //acc magnitude
-        tot_u += sqrtf(ux*ux + uy*uy);
-        tot_cells++;
+        g_tot_u += sqrtf(ux*ux + uy*uy);
+        g_tot_cells += 1;
     }
 
-    return (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
+    #pragma omp barrier
+
+    #pragma omp single
+    {
+        g_avg = (g_tot_cells > 0) ? (g_tot_u / (float)g_tot_cells) : 0.f;
+    }
+
+    #pragma omp barrier
+    return g_avg; 
 }
+
+
+
 
 
 
