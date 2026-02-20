@@ -199,45 +199,61 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
 {
   accelerate_flow(params, cells, obstacles);
   fused_kernal(params, cells, tmp_cells, obstacles);
+
+  t_speed temp = *cells;
+  *cells = *tmp_cells;
+  *tmp_cells = temp;
+
   return EXIT_SUCCESS;
 }
 
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
 {
-  float w1 = params.density * params.accel / 9.f;
-  float w2 = params.density * params.accel / 36.f;
+  const float w1 = params.density * params.accel / 9.f;
+  const float w2 = params.density * params.accel / 36.f;
 
-  int jj = params.ny - 2;
+  const int jj = params.ny - 2;
 
   for (int ii = 0; ii < params.nx; ii++)
   {
-    int idx = IDX(ii, jj, params.nx);
+    const int idx = IDX(ii, jj, params.nx);
 
-    if (!obstacles[idx]
-        && (cells->speeds[3][idx] - w1) > 0.f
-        && (cells->speeds[6][idx] - w2) > 0.f
-        && (cells->speeds[7][idx] - w2) > 0.f)
-    {
-      cells->speeds[1][idx] += w1;
-      cells->speeds[5][idx] += w2;
-      cells->speeds[8][idx] += w2;
+    /* mask: 1 if we should apply accel, 0 otherwise */
+    const float not_obst = 1.0f - (float)(obstacles[idx] != 0);
 
-      cells->speeds[3][idx] -= w1;
-      cells->speeds[6][idx] -= w2;
-      cells->speeds[7][idx] -= w2;
-    }
+    const float ok3 = (float)((cells->speeds[3][idx] - w1) > 0.f);
+    const float ok6 = (float)((cells->speeds[6][idx] - w2) > 0.f);
+    const float ok7 = (float)((cells->speeds[7][idx] - w2) > 0.f);
+
+    const float do_accel = not_obst * ok3 * ok6 * ok7;
+
+    /* apply updates scaled by mask */
+    cells->speeds[1][idx] += do_accel * w1;
+    cells->speeds[5][idx] += do_accel * w2;
+    cells->speeds[8][idx] += do_accel * w2;
+
+    cells->speeds[3][idx] -= do_accel * w1;
+    cells->speeds[6][idx] -= do_accel * w2;
+    cells->speeds[7][idx] -= do_accel * w2;
   }
+
   return EXIT_SUCCESS;
 }
 
 
+
 int fused_kernal(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles)
 {
-  /* ---- LOOP 1: PROPAGATE (cells -> tmp_cells) ---- */
+  const float c_sq = 1.f / 3.f;
+  const float w0   = 4.f / 9.f;
+  const float w1   = 1.f / 9.f;
+  const float w2   = 1.f / 36.f;
+
   for (int jj = 0; jj < params.ny; jj++)
   {
     for (int ii = 0; ii < params.nx; ii++)
     {
+      /* periodic neighbour indices */
       int y_n = (jj + 1) % params.ny;
       int x_e = (ii + 1) % params.nx;
       int y_s = (jj == 0) ? (params.ny - 1) : (jj - 1);
@@ -254,56 +270,33 @@ int fused_kernal(const t_param params, t_speed* cells, t_speed* tmp_cells, int* 
       int idx_en = IDX(x_e, y_n, params.nx);
       int idx_wn = IDX(x_w, y_n, params.nx);
 
-      tmp_cells->speeds[0][idx] = cells->speeds[0][idx];
-      tmp_cells->speeds[1][idx] = cells->speeds[1][idx_w];
-      tmp_cells->speeds[2][idx] = cells->speeds[2][idx_s];
-      tmp_cells->speeds[3][idx] = cells->speeds[3][idx_e];
-      tmp_cells->speeds[4][idx] = cells->speeds[4][idx_n];
-      tmp_cells->speeds[5][idx] = cells->speeds[5][idx_ws];
-      tmp_cells->speeds[6][idx] = cells->speeds[6][idx_es];
-      tmp_cells->speeds[7][idx] = cells->speeds[7][idx_en];
-      tmp_cells->speeds[8][idx] = cells->speeds[8][idx_wn];
-    }
-  }
-
-  /* ---- LOOP 2: REBOUND + COLLISION (tmp_cells -> cells) ---- */
-  const float c_sq = 1.f / 3.f;
-  const float w0 = 4.f / 9.f;
-  const float w1 = 1.f / 9.f;
-  const float w2 = 1.f / 36.f;
-
-  for (int jj = 0; jj < params.ny; jj++)
-  {
-    for (int ii = 0; ii < params.nx; ii++)
-    {
-      int idx = IDX(ii, jj, params.nx);
+      /* ---- PROPAGATE (pull into locals from OLD cells) ---- */
+      float t0 = cells->speeds[0][idx];
+      float t1 = cells->speeds[1][idx_w];
+      float t2 = cells->speeds[2][idx_s];
+      float t3 = cells->speeds[3][idx_e];
+      float t4 = cells->speeds[4][idx_n];
+      float t5 = cells->speeds[5][idx_ws];
+      float t6 = cells->speeds[6][idx_es];
+      float t7 = cells->speeds[7][idx_en];
+      float t8 = cells->speeds[8][idx_wn];
 
       if (obstacles[idx])
       {
-        /* rebound: mirror propagated values back into cells */
-        cells->speeds[0][idx] = tmp_cells->speeds[0][idx];
-        cells->speeds[1][idx] = tmp_cells->speeds[3][idx];
-        cells->speeds[2][idx] = tmp_cells->speeds[4][idx];
-        cells->speeds[3][idx] = tmp_cells->speeds[1][idx];
-        cells->speeds[4][idx] = tmp_cells->speeds[2][idx];
-        cells->speeds[5][idx] = tmp_cells->speeds[7][idx];
-        cells->speeds[6][idx] = tmp_cells->speeds[8][idx];
-        cells->speeds[7][idx] = tmp_cells->speeds[5][idx];
-        cells->speeds[8][idx] = tmp_cells->speeds[6][idx];
+        /* ---- REBOUND (write NEW state into tmp_cells) ---- */
+        tmp_cells->speeds[0][idx] = t0;
+        tmp_cells->speeds[1][idx] = t3;
+        tmp_cells->speeds[2][idx] = t4;
+        tmp_cells->speeds[3][idx] = t1;
+        tmp_cells->speeds[4][idx] = t2;
+        tmp_cells->speeds[5][idx] = t7;
+        tmp_cells->speeds[6][idx] = t8;
+        tmp_cells->speeds[7][idx] = t5;
+        tmp_cells->speeds[8][idx] = t6;
       }
       else
       {
-        /* compute local density from propagated distributions */
-        float t0 = tmp_cells->speeds[0][idx];
-        float t1 = tmp_cells->speeds[1][idx];
-        float t2 = tmp_cells->speeds[2][idx];
-        float t3 = tmp_cells->speeds[3][idx];
-        float t4 = tmp_cells->speeds[4][idx];
-        float t5 = tmp_cells->speeds[5][idx];
-        float t6 = tmp_cells->speeds[6][idx];
-        float t7 = tmp_cells->speeds[7][idx];
-        float t8 = tmp_cells->speeds[8][idx];
-
+        /* ---- COLLISION (use propagated locals, write NEW state into tmp_cells) ---- */
         float local_density = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8;
 
         float u_x = (t1 + t5 + t8 - (t3 + t6 + t7)) / local_density;
@@ -311,7 +304,6 @@ int fused_kernal(const t_param params, t_speed* cells, t_speed* tmp_cells, int* 
 
         float u_sq = u_x*u_x + u_y*u_y;
 
-        /* directional velocities */
         float u1 =  u_x;
         float u2 =  u_y;
         float u3 = -u_x;
@@ -321,11 +313,10 @@ int fused_kernal(const t_param params, t_speed* cells, t_speed* tmp_cells, int* 
         float u7 = -u_x - u_y;
         float u8 =  u_x - u_y;
 
-        float inv_csq = 1.f / c_sq;
-        float inv_csq2 = inv_csq * inv_csq;
+        float inv_csq      = 1.f / c_sq;
+        float inv_csq2     = inv_csq * inv_csq;
         float half_inv_csq = 0.5f * inv_csq;
 
-        /* equilibrium distributions */
         float d0 = w0 * local_density * (1.f - u_sq * half_inv_csq);
 
         float d1 = w1 * local_density * (1.f + u1*inv_csq + 0.5f*(u1*u1)*inv_csq2 - u_sq*half_inv_csq);
@@ -338,24 +329,24 @@ int fused_kernal(const t_param params, t_speed* cells, t_speed* tmp_cells, int* 
         float d7 = w2 * local_density * (1.f + u7*inv_csq + 0.5f*(u7*u7)*inv_csq2 - u_sq*half_inv_csq);
         float d8 = w2 * local_density * (1.f + u8*inv_csq + 0.5f*(u8*u8)*inv_csq2 - u_sq*half_inv_csq);
 
-        /* relaxation step: write back into cells */
         float om = params.omega;
 
-        cells->speeds[0][idx] = t0 + om * (d0 - t0);
-        cells->speeds[1][idx] = t1 + om * (d1 - t1);
-        cells->speeds[2][idx] = t2 + om * (d2 - t2);
-        cells->speeds[3][idx] = t3 + om * (d3 - t3);
-        cells->speeds[4][idx] = t4 + om * (d4 - t4);
-        cells->speeds[5][idx] = t5 + om * (d5 - t5);
-        cells->speeds[6][idx] = t6 + om * (d6 - t6);
-        cells->speeds[7][idx] = t7 + om * (d7 - t7);
-        cells->speeds[8][idx] = t8 + om * (d8 - t8);
+        tmp_cells->speeds[0][idx] = t0 + om * (d0 - t0);
+        tmp_cells->speeds[1][idx] = t1 + om * (d1 - t1);
+        tmp_cells->speeds[2][idx] = t2 + om * (d2 - t2);
+        tmp_cells->speeds[3][idx] = t3 + om * (d3 - t3);
+        tmp_cells->speeds[4][idx] = t4 + om * (d4 - t4);
+        tmp_cells->speeds[5][idx] = t5 + om * (d5 - t5);
+        tmp_cells->speeds[6][idx] = t6 + om * (d6 - t6);
+        tmp_cells->speeds[7][idx] = t7 + om * (d7 - t7);
+        tmp_cells->speeds[8][idx] = t8 + om * (d8 - t8);
       }
     }
   }
 
   return EXIT_SUCCESS;
 }
+
 
 
 
