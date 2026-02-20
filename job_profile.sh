@@ -24,19 +24,24 @@ OBS="obstacles_1024x1024.dat"
 OUTDIR="perf_out"
 mkdir -p "${OUTDIR}"
 
-perf stat \
-  -e cycles,instructions,cache-references,cache-misses,\
-L1-dcache-loads,L1-dcache-load-misses,\
-LLC-loads,LLC-load-misses,\
-branch-instructions,branch-misses,\
-stalled-cycles-frontend,stalled-cycles-backend \
-  -o "${OUTDIR}/perf_stat.txt" \
+EVENTS="cycles,instructions,bus-cycles,cache-references,cache-misses,branch-instructions,branch-misses,stalled-cycles-frontend,stalled-cycles-backend"
+
+perf stat -x, \
+  -e ${EVENTS} \
+  -o "${OUTDIR}/perf_stat.csv" \
   -- \
   perf record -F 999 -g --call-graph dwarf -o "${OUTDIR}/perf.data" -- \
     ./d2q9-bgk "${PARAMS}" "${OBS}"
 
-perf report --stdio -i "${OUTDIR}/perf.data" --no-children > "${OUTDIR}/perf_report.txt"
+perf stat \
+  -e ${EVENTS} \
+  -o "${OUTDIR}/perf_stat.txt" \
+  -- \
+  ./d2q9-bgk "${PARAMS}" "${OBS}" >/dev/null
 
+perf report --stdio -i "${OUTDIR}/perf.data" --no-children > "${OUTDIR}/perf_report.txt"
 perf annotate -i "${OUTDIR}/perf.data" > "${OUTDIR}/perf_annotate.txt"
 
 echo "Done. Reports in ${OUTDIR}/"
+echo "Key counters: ${OUTDIR}/perf_stat.csv (parseable) and ${OUTDIR}/perf_stat.txt (readable)"
+

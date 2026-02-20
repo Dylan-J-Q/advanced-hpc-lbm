@@ -179,17 +179,10 @@ int main(int argc, char *argv[])
 
     const int nthreads = omp_get_max_threads();
 
-    /*
-     * Per-thread accumulator arrays — one slot per thread, padded to a
-     * full cache line (64 bytes = 16 floats) to prevent false sharing.
-     * Without padding, threads writing adjacent slots in a tight loop
-     * would ping-pong the same cache line between cores.
-     */
     #define CACHE_LINE_FLOATS 16
     float *thread_tot_u     = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(float));
     int   *thread_tot_cells = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(int));
 
-    /* First-touch NUMA init: parallel loop with same schedule as compute */
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < params.nx * params.ny; i++) {
         for (int d = 0; d < NSPEEDS; d++) {
@@ -202,18 +195,6 @@ int main(int argc, char *argv[])
     gettimeofday(&timstr, NULL);
     init_toc = comp_tic = timstr.tv_sec + timstr.tv_usec / 1000000.0;
 
-    /*
-     * PERSISTENT PARALLEL REGION
-     * ---------------------------
-     * One fork, one join for the entire simulation.
-     * Each timestep inside costs only:
-     *   - 2x #pragma omp for barriers (accel + fused kernel)
-     *   - 1x #pragma omp barrier  (before reduction/swap)
-     *   - 1x #pragma omp single   (reduction + pointer swap)
-     *   - 1x implicit barrier at end of omp single
-     * Total: ~4 barriers per timestep, all purely synchronisation —
-     * zero locking, zero lock contention.
-     */
     #pragma omp parallel default(none) \
             shared(params, cells, tmp_cells, obstacles, av_vels, \
                    thread_tot_u, thread_tot_cells, \
@@ -388,19 +369,7 @@ static void fused_kernel(
     float my_tot_u     = 0.f;
     int   my_tot_cells = 0;
 
-    /*
-     * Parallelise over rows only.
-     *
-     * Removing collapse(2) eliminates:
-     *  - the modulo/division to recover jj,ii from a linear index
-     *  - the omp_test_nest_lock calls (58% of runtime in the profile)
-     *  - the associated cache thrashing
-     *
-     * No reduction clause — we accumulate into local variables and
-     * write to the caller's per-thread slot after the loop. The
-     * final tree-reduction is done serially in an 'omp single' block
-     * using a shared array, with zero lock contention.
-     */
+
     #pragma omp for schedule(static) nowait
     for (int jj = 0; jj < ny; jj++)
     {
