@@ -95,8 +95,38 @@ int initialise(const char* paramfile, const char* obstaclefile,
 ** accelerate_flow(), propagate(), rebound() & collision()
 */
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
-int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
-int fused_kernal(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
+int accelerate_flow(
+    const t_param params,
+    float * restrict c1,
+    float * restrict c3,
+    float * restrict c5,
+    float * restrict c6,
+    float * restrict c7,
+    float * restrict c8,
+    const int * restrict obstacles
+);
+int fused_kernal(
+    const t_param params,
+    const float * restrict c0,
+    const float * restrict c1,
+    const float * restrict c2,
+    const float * restrict c3,
+    const float * restrict c4,
+    const float * restrict c5,
+    const float * restrict c6,
+    const float * restrict c7,
+    const float * restrict c8,
+    float * restrict out0,
+    float * restrict out1,
+    float * restrict out2,
+    float * restrict out3,
+    float * restrict out4,
+    float * restrict out5,
+    float * restrict out6,
+    float * restrict out7,
+    float * restrict out8,
+    const int * restrict obstacles
+);
 
 float total_density(const t_param params, t_speed* cells);
 float av_velocity(const t_param params, t_speed* cells, int* obstacles);
@@ -197,9 +227,39 @@ int main(int argc, char* argv[])
 
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles)
 {
-  accelerate_flow(params, cells, obstacles);
-  fused_kernal(params, cells, tmp_cells, obstacles);
+  /* Pull out planes so the compiler sees simple restrict pointers */
+  float * restrict c0 = cells->speeds[0];
+  float * restrict c1 = cells->speeds[1];
+  float * restrict c2 = cells->speeds[2];
+  float * restrict c3 = cells->speeds[3];
+  float * restrict c4 = cells->speeds[4];
+  float * restrict c5 = cells->speeds[5];
+  float * restrict c6 = cells->speeds[6];
+  float * restrict c7 = cells->speeds[7];
+  float * restrict c8 = cells->speeds[8];
 
+  float * restrict out0 = tmp_cells->speeds[0];
+  float * restrict out1 = tmp_cells->speeds[1];
+  float * restrict out2 = tmp_cells->speeds[2];
+  float * restrict out3 = tmp_cells->speeds[3];
+  float * restrict out4 = tmp_cells->speeds[4];
+  float * restrict out5 = tmp_cells->speeds[5];
+  float * restrict out6 = tmp_cells->speeds[6];
+  float * restrict out7 = tmp_cells->speeds[7];
+  float * restrict out8 = tmp_cells->speeds[8];
+
+  const int * restrict obst = obstacles;
+
+  /* accelerate modifies ONLY the current lattice (cells) */
+  accelerate_flow(params, c1, c3, c5, c6, c7, c8, obst);
+
+  /* fused kernel reads from c* and writes to out* */
+  fused_kernal(params,
+               c0, c1, c2, c3, c4, c5, c6, c7, c8,
+               out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               obst);
+
+  /* swap pointer planes (SoA swap) so new state becomes cells */
   t_speed temp = *cells;
   *cells = *tmp_cells;
   *tmp_cells = temp;
@@ -207,139 +267,173 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
   return EXIT_SUCCESS;
 }
 
-int accelerate_flow(const t_param params, t_speed* cells, int* obstacles)
-{
+int accelerate_flow(
+    const t_param params,
+    float * restrict c1,
+    float * restrict c3,
+    float * restrict c5,
+    float * restrict c6,
+    float * restrict c7,
+    float * restrict c8,
+    const int * restrict obstacles
+){
   const float w1 = params.density * params.accel / 9.f;
   const float w2 = params.density * params.accel / 36.f;
-
   const int jj = params.ny - 2;
+  const int base = jj * params.nx;
 
+  /* No wrap in x here: idx = base + ii */
+  #pragma omp simd
   for (int ii = 0; ii < params.nx; ii++)
   {
-    const int idx = IDX(ii, jj, params.nx);
+    const int idx = base + ii;
 
-    /* mask: 1 if we should apply accel, 0 otherwise */
+    /* mask: 1 if apply accel else 0 */
     const float not_obst = 1.0f - (float)(obstacles[idx] != 0);
 
-    const float ok3 = (float)((cells->speeds[3][idx] - w1) > 0.f);
-    const float ok6 = (float)((cells->speeds[6][idx] - w2) > 0.f);
-    const float ok7 = (float)((cells->speeds[7][idx] - w2) > 0.f);
+    const float ok3 = (float)((c3[idx] - w1) > 0.f);
+    const float ok6 = (float)((c6[idx] - w2) > 0.f);
+    const float ok7 = (float)((c7[idx] - w2) > 0.f);
 
     const float do_accel = not_obst * ok3 * ok6 * ok7;
 
-    /* apply updates scaled by mask */
-    cells->speeds[1][idx] += do_accel * w1;
-    cells->speeds[5][idx] += do_accel * w2;
-    cells->speeds[8][idx] += do_accel * w2;
+    c1[idx] += do_accel * w1;
+    c5[idx] += do_accel * w2;
+    c8[idx] += do_accel * w2;
 
-    cells->speeds[3][idx] -= do_accel * w1;
-    cells->speeds[6][idx] -= do_accel * w2;
-    cells->speeds[7][idx] -= do_accel * w2;
+    c3[idx] -= do_accel * w1;
+    c6[idx] -= do_accel * w2;
+    c7[idx] -= do_accel * w2;
   }
 
   return EXIT_SUCCESS;
 }
 
-
-
-int fused_kernal(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles)
-{
+int fused_kernal(
+    const t_param params,
+    const float * restrict c0,
+    const float * restrict c1,
+    const float * restrict c2,
+    const float * restrict c3,
+    const float * restrict c4,
+    const float * restrict c5,
+    const float * restrict c6,
+    const float * restrict c7,
+    const float * restrict c8,
+    float * restrict out0,
+    float * restrict out1,
+    float * restrict out2,
+    float * restrict out3,
+    float * restrict out4,
+    float * restrict out5,
+    float * restrict out6,
+    float * restrict out7,
+    float * restrict out8,
+    const int * restrict obstacles
+){
   const float c_sq = 1.f / 3.f;
   const float w0   = 4.f / 9.f;
   const float w1   = 1.f / 9.f;
   const float w2   = 1.f / 36.f;
 
+  const float inv_csq      = 1.f / c_sq;
+  const float inv_csq2     = inv_csq * inv_csq;
+  const float half_inv_csq = 0.5f * inv_csq;
+
   for (int jj = 0; jj < params.ny; jj++)
   {
+    const int y_n = (jj + 1 == params.ny) ? 0 : (jj + 1);
+    const int y_s = (jj == 0) ? (params.ny - 1) : (jj - 1);
+
+    const int row   = jj  * params.nx;
+    const int row_n = y_n * params.nx;
+    const int row_s = y_s * params.nx;
+
+    /* hint SIMD: compilers may or may not accept due to wrap/branch */
+    #pragma omp simd
     for (int ii = 0; ii < params.nx; ii++)
     {
-      /* periodic neighbour indices */
-      int y_n = (jj + 1) % params.ny;
-      int x_e = (ii + 1) % params.nx;
-      int y_s = (jj == 0) ? (params.ny - 1) : (jj - 1);
-      int x_w = (ii == 0) ? (params.nx - 1) : (ii - 1);
+      const int x_e = (ii + 1 == params.nx) ? 0 : (ii + 1);
+      const int x_w = (ii == 0) ? (params.nx - 1) : (ii - 1);
 
-      int idx    = IDX(ii,  jj,  params.nx);
-      int idx_w  = IDX(x_w, jj,  params.nx);
-      int idx_e  = IDX(x_e, jj,  params.nx);
-      int idx_s  = IDX(ii,  y_s, params.nx);
-      int idx_n  = IDX(ii,  y_n, params.nx);
+      const int idx    = row   + ii;
+      const int idx_w  = row   + x_w;
+      const int idx_e  = row   + x_e;
+      const int idx_s  = row_s + ii;
+      const int idx_n  = row_n + ii;
 
-      int idx_ws = IDX(x_w, y_s, params.nx);
-      int idx_es = IDX(x_e, y_s, params.nx);
-      int idx_en = IDX(x_e, y_n, params.nx);
-      int idx_wn = IDX(x_w, y_n, params.nx);
+      const int idx_ws = row_s + x_w;
+      const int idx_es = row_s + x_e;
+      const int idx_en = row_n + x_e;
+      const int idx_wn = row_n + x_w;
 
-      /* ---- PROPAGATE (pull into locals from OLD cells) ---- */
-      float t0 = cells->speeds[0][idx];
-      float t1 = cells->speeds[1][idx_w];
-      float t2 = cells->speeds[2][idx_s];
-      float t3 = cells->speeds[3][idx_e];
-      float t4 = cells->speeds[4][idx_n];
-      float t5 = cells->speeds[5][idx_ws];
-      float t6 = cells->speeds[6][idx_es];
-      float t7 = cells->speeds[7][idx_en];
-      float t8 = cells->speeds[8][idx_wn];
+      /* propagate (pull) into locals from old lattice */
+      const float t0 = c0[idx];
+      const float t1 = c1[idx_w];
+      const float t2 = c2[idx_s];
+      const float t3 = c3[idx_e];
+      const float t4 = c4[idx_n];
+      const float t5 = c5[idx_ws];
+      const float t6 = c6[idx_es];
+      const float t7 = c7[idx_en];
+      const float t8 = c8[idx_wn];
 
       if (obstacles[idx])
       {
-        /* ---- REBOUND (write NEW state into tmp_cells) ---- */
-        tmp_cells->speeds[0][idx] = t0;
-        tmp_cells->speeds[1][idx] = t3;
-        tmp_cells->speeds[2][idx] = t4;
-        tmp_cells->speeds[3][idx] = t1;
-        tmp_cells->speeds[4][idx] = t2;
-        tmp_cells->speeds[5][idx] = t7;
-        tmp_cells->speeds[6][idx] = t8;
-        tmp_cells->speeds[7][idx] = t5;
-        tmp_cells->speeds[8][idx] = t6;
+        /* rebound (write new lattice to out*) */
+        out0[idx] = t0;
+        out1[idx] = t3;
+        out2[idx] = t4;
+        out3[idx] = t1;
+        out4[idx] = t2;
+        out5[idx] = t7;
+        out6[idx] = t8;
+        out7[idx] = t5;
+        out8[idx] = t6;
       }
       else
       {
-        /* ---- COLLISION (use propagated locals, write NEW state into tmp_cells) ---- */
-        float local_density = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8;
+        const float local_density = t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8;
 
-        float u_x = (t1 + t5 + t8 - (t3 + t6 + t7)) / local_density;
-        float u_y = (t2 + t5 + t6 - (t4 + t7 + t8)) / local_density;
+        const float u_x = (t1 + t5 + t8 - (t3 + t6 + t7)) / local_density;
+        const float u_y = (t2 + t5 + t6 - (t4 + t7 + t8)) / local_density;
 
-        float u_sq = u_x*u_x + u_y*u_y;
+        const float u_sq = u_x*u_x + u_y*u_y;
 
-        float u1 =  u_x;
-        float u2 =  u_y;
-        float u3 = -u_x;
-        float u4 = -u_y;
-        float u5 =  u_x + u_y;
-        float u6 = -u_x + u_y;
-        float u7 = -u_x - u_y;
-        float u8 =  u_x - u_y;
+        /* directional u (only 1..8 are used) */
+        const float u1 =  u_x;
+        const float u2 =  u_y;
+        const float u3 = -u_x;
+        const float u4 = -u_y;
+        const float u5 =  u_x + u_y;
+        const float u6 = -u_x + u_y;
+        const float u7 = -u_x - u_y;
+        const float u8 =  u_x - u_y;
 
-        float inv_csq      = 1.f / c_sq;
-        float inv_csq2     = inv_csq * inv_csq;
-        float half_inv_csq = 0.5f * inv_csq;
+        /* equilibrium */
+        const float d0 = w0 * local_density * (1.f - u_sq * half_inv_csq);
 
-        float d0 = w0 * local_density * (1.f - u_sq * half_inv_csq);
+        const float d1 = w1 * local_density * (1.f + u1*inv_csq + 0.5f*(u1*u1)*inv_csq2 - u_sq*half_inv_csq);
+        const float d2 = w1 * local_density * (1.f + u2*inv_csq + 0.5f*(u2*u2)*inv_csq2 - u_sq*half_inv_csq);
+        const float d3 = w1 * local_density * (1.f + u3*inv_csq + 0.5f*(u3*u3)*inv_csq2 - u_sq*half_inv_csq);
+        const float d4 = w1 * local_density * (1.f + u4*inv_csq + 0.5f*(u4*u4)*inv_csq2 - u_sq*half_inv_csq);
 
-        float d1 = w1 * local_density * (1.f + u1*inv_csq + 0.5f*(u1*u1)*inv_csq2 - u_sq*half_inv_csq);
-        float d2 = w1 * local_density * (1.f + u2*inv_csq + 0.5f*(u2*u2)*inv_csq2 - u_sq*half_inv_csq);
-        float d3 = w1 * local_density * (1.f + u3*inv_csq + 0.5f*(u3*u3)*inv_csq2 - u_sq*half_inv_csq);
-        float d4 = w1 * local_density * (1.f + u4*inv_csq + 0.5f*(u4*u4)*inv_csq2 - u_sq*half_inv_csq);
+        const float d5 = w2 * local_density * (1.f + u5*inv_csq + 0.5f*(u5*u5)*inv_csq2 - u_sq*half_inv_csq);
+        const float d6 = w2 * local_density * (1.f + u6*inv_csq + 0.5f*(u6*u6)*inv_csq2 - u_sq*half_inv_csq);
+        const float d7 = w2 * local_density * (1.f + u7*inv_csq + 0.5f*(u7*u7)*inv_csq2 - u_sq*half_inv_csq);
+        const float d8 = w2 * local_density * (1.f + u8*inv_csq + 0.5f*(u8*u8)*inv_csq2 - u_sq*half_inv_csq);
 
-        float d5 = w2 * local_density * (1.f + u5*inv_csq + 0.5f*(u5*u5)*inv_csq2 - u_sq*half_inv_csq);
-        float d6 = w2 * local_density * (1.f + u6*inv_csq + 0.5f*(u6*u6)*inv_csq2 - u_sq*half_inv_csq);
-        float d7 = w2 * local_density * (1.f + u7*inv_csq + 0.5f*(u7*u7)*inv_csq2 - u_sq*half_inv_csq);
-        float d8 = w2 * local_density * (1.f + u8*inv_csq + 0.5f*(u8*u8)*inv_csq2 - u_sq*half_inv_csq);
+        const float om = params.omega;
 
-        float om = params.omega;
-
-        tmp_cells->speeds[0][idx] = t0 + om * (d0 - t0);
-        tmp_cells->speeds[1][idx] = t1 + om * (d1 - t1);
-        tmp_cells->speeds[2][idx] = t2 + om * (d2 - t2);
-        tmp_cells->speeds[3][idx] = t3 + om * (d3 - t3);
-        tmp_cells->speeds[4][idx] = t4 + om * (d4 - t4);
-        tmp_cells->speeds[5][idx] = t5 + om * (d5 - t5);
-        tmp_cells->speeds[6][idx] = t6 + om * (d6 - t6);
-        tmp_cells->speeds[7][idx] = t7 + om * (d7 - t7);
-        tmp_cells->speeds[8][idx] = t8 + om * (d8 - t8);
+        out0[idx] = t0 + om * (d0 - t0);
+        out1[idx] = t1 + om * (d1 - t1);
+        out2[idx] = t2 + om * (d2 - t2);
+        out3[idx] = t3 + om * (d3 - t3);
+        out4[idx] = t4 + om * (d4 - t4);
+        out5[idx] = t5 + om * (d5 - t5);
+        out6[idx] = t6 + om * (d6 - t6);
+        out7[idx] = t7 + om * (d7 - t7);
+        out8[idx] = t8 + om * (d8 - t8);
       }
     }
   }
