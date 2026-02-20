@@ -23,13 +23,13 @@ module load nvidia
 # precison - double
 # loads only
 # set sufficient l3 and dram kbytes (1 socket)
-OMP_NUM_THREADS=72 python3 run.py ./config/isambard-grace.conf \
+OMP_NUM_THREADS=144 python3 run.py ./config/isambard-grace.conf \
   --isa sve --threads 144 --precision dp -tl1 1 -tl2 1 \
   --only_ld --l3_kbytes 116736 --dram_kbytes 34504704 \
   --test roofline
 
 source /projects/b35cg/carm.sh
-OMP_NUM_THREADS=72 python3 DBI_AI_Calculator.py \
+OMP_NUM_THREADS=144 python3 DBI_AI_Calculator.py \
   --roi --name isambard-grace --threads 144 \
   /projects/b35cg/dynamorio \
-  "$WORK_DIR/d2q9-bgk" "$WORK_DIR/input_1024x1024.params" "$WORK_DIR/obstacles_1024x1024.dat"
+  "$WORK_DIR/d2q9-bgk" "$WORK_DIR/input_128x128.params" "$WORK_DIR/obstacles_128x128.dat"

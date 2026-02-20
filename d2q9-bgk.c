@@ -228,7 +228,7 @@ int main(int argc, char *argv[])
         CARM_roi_begin();
 
         //for (int tt = 0; tt < params.maxIters; tt++)
-        for (int tt = 0; tt < 10; tt++)
+        for (int tt = 0; tt < 50; tt++)
         {
             accelerate_flow(params, cells, obstacles);
 
