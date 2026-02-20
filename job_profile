@@ -1,0 +1,46 @@
+#!/bin/bash
+#SBATCH --job-name=d2q9-bgk-perf
+#SBATCH --nodes=1
+#SBATCH --time=00:10:00
+#SBATCH --cpus-per-task=144
+#SBATCH --exclusive
+#SBATCH --ntasks-per-node=1
+
+set -euo pipefail
+
+make clean
+make
+
+export OMP_PROC_BIND=true
+export OMP_PLACES=cores
+export OMP_NUM_THREADS=144
+export OMP_DYNAMIC=false
+export OMP_NESTED=false
+export OMP_MAX_ACTIVE_LEVELS=1
+
+PARAMS="input_1024x1024.params"
+OBS="obstacles_1024x1024.dat"
+
+OUTDIR="perf_out"
+mkdir -p "${OUTDIR}"
+
+EVENTS="cycles,instructions,bus-cycles,cache-references,cache-misses,branch-instructions,branch-misses,stalled-cycles-frontend,stalled-cycles-backend"
+
+perf stat -x, \
+  -e ${EVENTS} \
+  -o "${OUTDIR}/perf_stat.csv" \
+  -- \
+  perf record -F 999 -g --call-graph dwarf -o "${OUTDIR}/perf.data" -- \
+    ./d2q9-bgk "${PARAMS}" "${OBS}"
+
+perf stat \
+  -e ${EVENTS} \
+  -o "${OUTDIR}/perf_stat.txt" \
+  -- \
+  ./d2q9-bgk "${PARAMS}" "${OBS}" >/dev/null
+
+perf report --stdio -i "${OUTDIR}/perf.data" --no-children > "${OUTDIR}/perf_report.txt"
+perf annotate -i "${OUTDIR}/perf.data" > "${OUTDIR}/perf_annotate.txt"
+
+echo "Done. Reports in ${OUTDIR}/"
+echo "Key counters: ${OUTDIR}/perf_stat.csv (parseable) and ${OUTDIR}/perf_stat.txt (readable)"
