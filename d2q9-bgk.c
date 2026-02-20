@@ -55,6 +55,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <omp.h>
+#include "carm-roofline/dbi_carm_roi.h"
 
 #define NSPEEDS         9
 #define FINALSTATEFILE  "final_state.dat"
@@ -224,7 +225,10 @@ int main(int argc, char *argv[])
         float *my_tot_u     = &thread_tot_u    [tid * CACHE_LINE_FLOATS];
         int   *my_tot_cells = &thread_tot_cells [tid * CACHE_LINE_FLOATS];
 
-        for (int tt = 0; tt < params.maxIters; tt++)
+        CARM_roi_begin();
+
+        //for (int tt = 0; tt < params.maxIters; tt++)
+        for (int tt = 0; tt < 10; tt++)
         {
             accelerate_flow(params, cells, obstacles);
 
@@ -265,6 +269,10 @@ int main(int argc, char *argv[])
             }
 #endif
         }
+
+        CARM_roi_end();
+
+
     } /* end persistent parallel region */
 
     gettimeofday(&timstr, NULL);
