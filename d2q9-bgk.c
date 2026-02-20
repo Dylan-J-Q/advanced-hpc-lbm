@@ -152,6 +152,9 @@ void usage(const char* exe);
 ** main program:
 ** initialise, timestep loop, finalise
 */
+static float g_tot_u;
+static int   g_tot_cells;
+static float g_av; 
 int main(int argc, char* argv[])
 {
   char*    paramfile = NULL;    /* name of the input parameter file */
@@ -184,27 +187,19 @@ int main(int argc, char* argv[])
   /* Init time stops here, compute time starts*/
   gettimeofday(&timstr, NULL);
   init_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
-  comp_tic=init_toc;
+  comp_tic=init_toc; 
 
-  
-  #pragma omp parallel default(none) shared(params, cells, tmp_cells, obstacles, av_vels)
+  #pragma omp parallel default(none) shared(params, cells, tmp_cells, obstacles, av_vels, g_av)
   {
       //for (int tt = 0; tt < 50; tt++)
       for (int tt = 0; tt < params.maxIters; tt++)
       {
         timestep(params, cells, tmp_cells, obstacles);
-
-        float av = av_velocity(params,
-            cells->speeds[0], cells->speeds[1], cells->speeds[2],
-            cells->speeds[3], cells->speeds[4], cells->speeds[5],
-            cells->speeds[6], cells->speeds[7], cells->speeds[8],
-            obstacles);
         
         #pragma omp single
         {
-          av_vels[tt] = av;
+          av_vels[tt] = g_av;
         }
-        #pragma omp barrier
     }
   }
   /* Compute time stops here, collate time starts*/
@@ -236,7 +231,6 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
 {
     accelerate_flow(params, cells, obstacles);
 
-    #pragma omp barrier
     // stream + bounce-back + collide: read cells, write tmp
     propagate_rebound_collide(params,
         cells->speeds[0], cells->speeds[1], cells->speeds[2],
@@ -248,7 +242,6 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
         obstacles
     );
 
-    #pragma omp barrier
     // swap pointers
     #pragma omp single
     {
@@ -257,7 +250,6 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
     *tmp_cells = temp;
     }
 
-    #pragma omp barrier
     return EXIT_SUCCESS;
 }
 
@@ -381,19 +373,26 @@ int propagate_rebound_collide(
     const int ny = params.ny;
     const float omega = params.omega;
 
-    /* One fused loop over entire domain (interior + boundaries). */
-    #pragma omp for
+    /* Initialise shared reduction variables once per call.
+       'single' has an implicit barrier at the end (good: everyone sees zeros). */
+    #pragma omp single
+    {
+        g_tot_u = 0.f;
+        g_tot_cells = 0;
+        g_av = 0.f;
+    }
+
+    /* One fused loop over entire domain; accumulate av-velocity during kernel. */
+    #pragma omp for reduction(+:g_tot_u, g_tot_cells)
     for (int jj = 0; jj < ny; ++jj)
     {
         const int jj_n = (jj == ny - 1) ? 0      : (jj + 1);
         const int jj_s = (jj == 0)      ? ny - 1 : (jj - 1);
 
-        const int row      = jj   * nx;
-        const int row_north= jj_n * nx;
-        const int row_south= jj_s * nx;
+        const int row       = jj   * nx;
+        const int row_north = jj_n * nx;
+        const int row_south = jj_s * nx;
 
-        /* SIMD is safe for the ii loop body; there are no loop-carried deps.
-           Note: neighbor indices wrap, but that's just reads. */
         #pragma omp simd
         for (int ii = 0; ii < nx; ++ii)
         {
@@ -402,19 +401,18 @@ int propagate_rebound_collide(
 
             const int idx = row + ii;
 
-            /* ---- STREAM (pull) ----
-               Match your previous boundary + interior definitions exactly. */
+            /* ---- STREAM (pull) ---- */
             const float r0 = c0[idx];
-            const float r1 = c1[row + ii_w];          /* from west  */
-            const float r2 = c2[row_south + ii];      /* from south */
-            const float r3 = c3[row + ii_e];          /* from east  */
-            const float r4 = c4[row_north + ii];      /* from north */
-            const float r5 = c5[row_south + ii_w];    /* from south-west */
-            const float r6 = c6[row_south + ii_e];    /* from south-east */
-            const float r7 = c7[row_north + ii_e];    /* from north-east */
-            const float r8 = c8[row_north + ii_w];    /* from north-west */
+            const float r1 = c1[row + ii_w];
+            const float r2 = c2[row_south + ii];
+            const float r3 = c3[row + ii_e];
+            const float r4 = c4[row_north + ii];
+            const float r5 = c5[row_south + ii_w];
+            const float r6 = c6[row_south + ii_e];
+            const float r7 = c7[row_north + ii_e];
+            const float r8 = c8[row_north + ii_w];
 
-            /* ---- REBOUND (bounce-back at destination cell) ---- */
+            /* ---- BOUNCE BACK (at destination) ---- */
             const int obs = obstacles[idx];
 
             const float s0 = r0;
@@ -427,16 +425,88 @@ int propagate_rebound_collide(
             const float s7 = obs ? r5 : r7;
             const float s8 = obs ? r6 : r8;
 
-            /* ---- COLLIDE (or copy if obstacle) ---- */
-            collide_or_copy(obs, omega,
-                            s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                            &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                            &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
+            /* ---- COLLIDE OR COPY, but keep locals (o0..o8) for av-vel ---- */
+            float o0,o1,o2,o3,o4,o5,o6,o7,o8;
+
+            if (obs)
+            {
+                /* obstacles: copy post-bounce-back populations */
+                o0=s0; o1=s1; o2=s2; o3=s3; o4=s4; o5=s5; o6=s6; o7=s7; o8=s8;
+            }
+            else
+            {
+                /* collision */
+                const float w0 = 4.f/9.f, w1 = 1.f/9.f, w2 = 1.f/36.f;
+                const float inv_c_sq = 3.f;
+                const float inv_2_c_sq = 1.5f;
+                const float inv_2_c_sq_sq = 4.5f;
+
+                float rho = s0+s1+s2+s3+s4+s5+s6+s7+s8;
+                if (rho <= 1e-20f) rho = 1e-20f;
+                const float inv_rho = 1.f / rho;
+
+                const float ux = (s1+s5+s8 - (s3+s6+s7)) * inv_rho;
+                const float uy = (s2+s5+s6 - (s4+s7+s8)) * inv_rho;
+
+                const float u2 = ux*ux + uy*uy;
+                const float common = 1.f - inv_2_c_sq * u2;
+
+                const float feq0 = w0 * rho * common;
+                const float feq1 = w1 * rho * (common + inv_c_sq*ux + inv_2_c_sq_sq*ux*ux);
+                const float feq2 = w1 * rho * (common + inv_c_sq*uy + inv_2_c_sq_sq*uy*uy);
+                const float feq3 = w1 * rho * (common - inv_c_sq*ux + inv_2_c_sq_sq*ux*ux);
+                const float feq4 = w1 * rho * (common - inv_c_sq*uy + inv_2_c_sq_sq*uy*uy);
+
+                float uxy = ux + uy;
+                const float feq5 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
+                uxy = -ux + uy;
+                const float feq6 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
+                uxy = -ux - uy;
+                const float feq7 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
+                uxy = ux - uy;
+                const float feq8 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
+
+                o0 = s0 + omega * (feq0 - s0);
+                o1 = s1 + omega * (feq1 - s1);
+                o2 = s2 + omega * (feq2 - s2);
+                o3 = s3 + omega * (feq3 - s3);
+                o4 = s4 + omega * (feq4 - s4);
+                o5 = s5 + omega * (feq5 - s5);
+                o6 = s6 + omega * (feq6 - s6);
+                o7 = s7 + omega * (feq7 - s7);
+                o8 = s8 + omega * (feq8 - s8);
+            }
+
+            /* write outputs */
+            out0[idx]=o0; out1[idx]=o1; out2[idx]=o2; out3[idx]=o3; out4[idx]=o4;
+            out5[idx]=o5; out6[idx]=o6; out7[idx]=o7; out8[idx]=o8;
+
+            /* ---- AV VELOCITY ACCUMULATION (post-collision) ---- */
+            if (!obs)
+            {
+                float rho2 = o0+o1+o2+o3+o4+o5+o6+o7+o8;
+                if (rho2 <= 1e-20f) rho2 = 1e-20f;
+                const float inv_rho2 = 1.f / rho2;
+
+                const float ux2 = (o1+o5+o8 - (o3+o6+o7)) * inv_rho2;
+                const float uy2 = (o2+o5+o6 - (o4+o7+o8)) * inv_rho2;
+
+                g_tot_u += sqrtf(ux2*ux2 + uy2*uy2);
+                g_tot_cells += 1;
+            }
         }
+    }
+
+    /* implicit barrier at end of omp for reduction.
+       Compute average once. */
+    #pragma omp single
+    {
+        g_av = (g_tot_cells > 0) ? (g_tot_u / (float)g_tot_cells) : 0.f;
     }
 
     return EXIT_SUCCESS;
 }
+
 
 
 float av_velocity(const t_param params,
