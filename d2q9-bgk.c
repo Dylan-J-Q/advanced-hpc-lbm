@@ -55,6 +55,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include "carm-roofline/dbi_carm_roi.h"
 
 #define NSPEEDS         9
 #define FINALSTATEFILE  "final_state.dat"
@@ -185,8 +186,11 @@ int main(int argc, char* argv[])
   gettimeofday(&timstr, NULL);
   init_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   comp_tic=init_toc;
+  CARM_roi_begin();
 
-  for (int tt = 0; tt < params.maxIters; tt++)
+  //for (int tt = 0; tt < params.maxIters; tt++)
+  for (int tt = 0; tt < 50; tt++)
+
   {
     timestep(params, cells, tmp_cells, obstacles);
     av_vels[tt] = av_velocity(params,
@@ -200,6 +204,7 @@ int main(int argc, char* argv[])
     printf("tot density: %.12E\n", total_density(params, cells));
 #endif
   }
+  CARM_roi_end();
   
   /* Compute time stops here, collate time starts*/
   gettimeofday(&timstr, NULL);
