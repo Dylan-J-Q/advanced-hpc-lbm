@@ -186,9 +186,10 @@ int main(int argc, char* argv[])
   init_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   comp_tic=init_toc;
 
-  //for (int tt = 0; tt < 50; tt++)
+  
   #pragma omp parallel default(none) shared(params, cells, tmp_cells, obstacles, av_vels)
   {
+      //for (int tt = 0; tt < 50; tt++)
       for (int tt = 0; tt < params.maxIters; tt++)
       {
         timestep(params, cells, tmp_cells, obstacles);
@@ -296,9 +297,6 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
   return EXIT_SUCCESS;
 }
 
-#include <math.h>
-#include <stdlib.h>
-
 static inline void collide_or_copy(
     int is_obstacle,
     float omega,
@@ -383,206 +381,63 @@ int propagate_rebound_collide(
     const int ny = params.ny;
     const float omega = params.omega;
 
-    //interior loop
+    /* One fused loop over entire domain (interior + boundaries). */
     #pragma omp for
-    for (int jj = 1; jj < ny - 1; ++jj) {
-        const int row       = jj * nx;
-        const int row_north = (jj + 1) * nx;
-        const int row_south = (jj - 1) * nx;
+    for (int jj = 0; jj < ny; ++jj)
+    {
+        const int jj_n = (jj == ny - 1) ? 0      : (jj + 1);
+        const int jj_s = (jj == 0)      ? ny - 1 : (jj - 1);
 
+        const int row      = jj   * nx;
+        const int row_north= jj_n * nx;
+        const int row_south= jj_s * nx;
+
+        /* SIMD is safe for the ii loop body; there are no loop-carried deps.
+           Note: neighbor indices wrap, but that's just reads. */
         #pragma omp simd
-        for (int ii = 1; ii < nx - 1; ++ii) {
+        for (int ii = 0; ii < nx; ++ii)
+        {
+            const int ii_e = (ii == nx - 1) ? 0      : (ii + 1);
+            const int ii_w = (ii == 0)      ? nx - 1 : (ii - 1);
+
             const int idx = row + ii;
 
-            // stream
-            float r0 = c0[idx];
-            float r1 = c1[idx - 1];
-            float r2 = c2[row_south + ii];
-            float r3 = c3[idx + 1];
-            float r4 = c4[row_north + ii];
-            float r5 = c5[row_south + ii - 1];
-            float r6 = c6[row_south + ii + 1];
-            float r7 = c7[row_north + ii + 1];
-            float r8 = c8[row_north + ii - 1];
+            /* ---- STREAM (pull) ----
+               Match your previous boundary + interior definitions exactly. */
+            const float r0 = c0[idx];
+            const float r1 = c1[row + ii_w];          /* from west  */
+            const float r2 = c2[row_south + ii];      /* from south */
+            const float r3 = c3[row + ii_e];          /* from east  */
+            const float r4 = c4[row_north + ii];      /* from north */
+            const float r5 = c5[row_south + ii_w];    /* from south-west */
+            const float r6 = c6[row_south + ii_e];    /* from south-east */
+            const float r7 = c7[row_north + ii_e];    /* from north-east */
+            const float r8 = c8[row_north + ii_w];    /* from north-west */
 
-            // bounce back if obstacle at destination cell
+            /* ---- REBOUND (bounce-back at destination cell) ---- */
             const int obs = obstacles[idx];
-            float s0 = r0;
-            float s1 = obs ? r3 : r1;
-            float s2 = obs ? r4 : r2;
-            float s3 = obs ? r1 : r3;
-            float s4 = obs ? r2 : r4;
-            float s5 = obs ? r7 : r5;
-            float s6 = obs ? r8 : r6;
-            float s7 = obs ? r5 : r7;
-            float s8 = obs ? r6 : r8;
 
-            // collide
-            collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
+            const float s0 = r0;
+            const float s1 = obs ? r3 : r1;
+            const float s2 = obs ? r4 : r2;
+            const float s3 = obs ? r1 : r3;
+            const float s4 = obs ? r2 : r4;
+            const float s5 = obs ? r7 : r5;
+            const float s6 = obs ? r8 : r6;
+            const float s7 = obs ? r5 : r7;
+            const float s8 = obs ? r6 : r8;
+
+            /* ---- COLLIDE (or copy if obstacle) ---- */
+            collide_or_copy(obs, omega,
+                            s0,s1,s2,s3,s4,s5,s6,s7,s8,
                             &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
                             &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
         }
     }
 
-    
-    //calculate top and bottom rows
-    const int row_top        = 0;
-    const int row_north_top  = nx;
-    const int row_south_top  = (ny - 1) * nx;
-
-    const int jj_bot         = ny - 1;
-    const int row_bot        = jj_bot * nx;
-    const int row_north_bot  = 0;
-    const int row_south_bot  = (jj_bot - 1) * nx;
-    #pragma omp for
-    for (int ii = 0; ii < nx; ++ii) {
-        const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
-        const int ii_e = (ii == nx-1) ? 0      : ii + 1;
-
-        //top
-        {
-        const int idx = row_top + ii;
-
-        //stream
-        float r0 = c0[idx];
-        float r1 = c1[row_top + ii_w];
-        float r2 = c2[row_south_top + ii];
-        float r3 = c3[row_top + ii_e];
-        float r4 = c4[row_north_top + ii];
-        float r5 = c5[row_south_top + ii_w];
-        float r6 = c6[row_south_top + ii_e];
-        float r7 = c7[row_north_top + ii_e];
-        float r8 = c8[row_north_top + ii_w];
-
-        //bounce back
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        //collide
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-    
-        }
-
-        //bottom row
-        {
-        const int idx = row_bot + ii;
-
-        //stream
-        float r0 = c0[idx];
-        float r1 = c1[row_bot + ii_w];
-        float r2 = c2[row_south_bot + ii];
-        float r3 = c3[row_bot + ii_e];
-        float r4 = c4[row_north_bot + ii];
-        float r5 = c5[row_south_bot + ii_w];
-        float r6 = c6[row_south_bot + ii_e];
-        float r7 = c7[row_north_bot + ii_e];
-        float r8 = c8[row_north_bot + ii_w];
-
-        //bounce back
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        //collide
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-      
-        }
-    }
-
-    //left and right columns
-    #pragma omp for
-    for (int jj = 1; jj < ny - 1; ++jj) {
-        const int row       = jj * nx;
-        const int row_north = (jj + 1) * nx;
-        const int row_south = (jj - 1) * nx;
-
-        //left column
-        {
-        const int idx  = row;
-        const int ii_w = nx - 1;
-        const int ii_e = 1;
-
-        float r0 = c0[idx];
-        float r1 = c1[row + ii_w];
-        float r2 = c2[row_south];
-        float r3 = c3[row + ii_e];
-        float r4 = c4[row_north];
-        float r5 = c5[row_south + ii_w];
-        float r6 = c6[row_south + ii_e];
-        float r7 = c7[row_north + ii_e];
-        float r8 = c8[row_north + ii_w];
-
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-        }
-
-        //right
-        {
-        const int ii  = nx - 1;
-        const int idx = row + ii;
-        const int ii_w = ii - 1;
-        const int ii_e = 0;
-
-        float r0 = c0[idx];
-        float r1 = c1[row + ii_w];
-        float r2 = c2[row_south + ii];
-        float r3 = c3[row + ii_e];
-        float r4 = c4[row_north + ii];
-        float r5 = c5[row_south + ii_w];
-        float r6 = c6[row_south + ii_e];
-        float r7 = c7[row_north + ii_e];
-        float r8 = c8[row_north + ii_w];
-
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-        }
-    }
-
     return EXIT_SUCCESS;
 }
+
 
 float av_velocity(const t_param params,
               float * restrict c0,
