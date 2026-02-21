@@ -186,7 +186,8 @@ int main(int argc, char* argv[])
   init_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   comp_tic=init_toc;
 
-  for (int tt = 0; tt < params.maxIters; tt++)
+  for (int tt = 0; tt < 50; tt++)
+  //for (int tt = 0; tt < params.maxIters; tt++)
   {
     timestep(params, cells, tmp_cells, obstacles);
     av_vels[tt] = av_velocity(params,
@@ -260,6 +261,7 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
   int jj = params.ny - 2;
   int row = jj * params.nx;
 
+  #pragma omp parallel for
   for (int ii = 0; ii < params.nx; ii++)
   {
     int idx = ii + row;
@@ -372,6 +374,7 @@ int propagate_rebound_collide(
     const float omega = params.omega;
 
     //interior loop
+    #pragma omp parallel for
     for (int jj = 1; jj < ny - 1; ++jj) {
         const int row       = jj * nx;
         const int row_north = (jj + 1) * nx;
@@ -421,7 +424,7 @@ int propagate_rebound_collide(
     const int row_bot        = jj_bot * nx;
     const int row_north_bot  = 0;
     const int row_south_bot  = (jj_bot - 1) * nx;
-
+    #pragma omp parallel for
     for (int ii = 0; ii < nx; ++ii) {
         const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
         const int ii_e = (ii == nx-1) ? 0      : ii + 1;
@@ -496,6 +499,7 @@ int propagate_rebound_collide(
     }
 
     //left and right columns
+    #pragma omp parallel for
     for (int jj = 1; jj < ny - 1; ++jj) {
         const int row       = jj * nx;
         const int row_north = (jj + 1) * nx;
