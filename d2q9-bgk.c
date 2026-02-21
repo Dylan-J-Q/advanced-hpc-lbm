@@ -87,18 +87,14 @@ int initialise(const char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
                int** obstacles_ptr, float** av_vels_ptr);
 
-/*
-** The main calculation methods.
-** timestep calls, in order, the functions:
-** accelerate_flow(), propagate(), rebound() & collision()
-*/
+
 static inline void collide_cell(
     float omega,
     float s0, float s1, float s2, float s3, float s4,
     float s5, float s6, float s7, float s8,
     float *o0, float *o1, float *o2, float *o3, float *o4,
     float *o5, float *o6, float *o7, float *o8,
-    float *out_speed   /* optional: |u| written here if non-NULL */
+    float *out_speed
 );
 
 static void accelerate_flow(const t_param params,
@@ -180,8 +176,8 @@ int main(int argc, char *argv[])
     const int nthreads = omp_get_max_threads();
 
     #define CACHE_LINE_FLOATS 16
-    float *thread_tot_u     = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(float));
-    int   *thread_tot_cells = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(int));
+    float *thread_tot_u = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(float));
+    int *thread_tot_cells = calloc(nthreads * CACHE_LINE_FLOATS, sizeof(int));
 
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < params.nx * params.ny; i++) {
@@ -246,7 +242,7 @@ int main(int argc, char *argv[])
             }
 #endif
         }
-    } /* end persistent parallel region */
+    } 
 
     gettimeofday(&timstr, NULL);
     comp_toc = col_tic = timstr.tv_sec + timstr.tv_usec / 1000000.0;
@@ -275,7 +271,7 @@ static inline void collide_cell(
     float s5, float s6, float s7, float s8,
     float *o0, float *o1, float *o2, float *o3, float *o4,
     float *o5, float *o6, float *o7, float *o8,
-    float *out_speed   /* optional: |u| written here if non-NULL */
+    float *out_speed
 ){
     const float w0 = 4.f/9.f,  w1 = 1.f/9.f,  w2 = 1.f/36.f;
     const float c_sq_inv  = 3.f;
@@ -387,7 +383,7 @@ static void fused_kernel(
 
             const int idx = row + ii;
 
-            /* stream */
+            //stream
             float r0 = c0[idx];
             float r1 = c1[row   + ii_w];
             float r2 = c2[row_s + ii  ];
@@ -398,7 +394,7 @@ static void fused_kernel(
             float r7 = c7[row_n + ii_e];
             float r8 = c8[row_n + ii_w];
 
-            /* bounce-back */
+            //rebound
             const int obs = obstacles[idx];
             float s0 = r0;
             float s1 = obs ? r3 : r1;
@@ -410,7 +406,7 @@ static void fused_kernel(
             float s7 = obs ? r5 : r7;
             float s8 = obs ? r6 : r8;
 
-            /* collide or copy */
+            //collide
             if (obs) {
                 o0[idx]=s0; o1[idx]=s1; o2[idx]=s2;
                 o3[idx]=s3; o4[idx]=s4; o5[idx]=s5;
@@ -428,8 +424,6 @@ static void fused_kernel(
             }
         }
     }
-    /* nowait — no implicit barrier here; caller inserts an explicit   */
-    /* barrier before reading these values in the single block.        */
 
     *local_tot_u     = my_tot_u;
     *local_tot_cells = my_tot_cells;
@@ -557,7 +551,6 @@ int initialise(const char* paramfile, const char* obstaclefile,
   */
 
   /* main grid */
-  //*cells_ptr = (t_speed*)malloc(sizeof(t_speed) * (params->ny * params->nx));
   int n_cells = params->nx * params->ny;
 
   t_speed *cells = malloc(sizeof(t_speed));
@@ -566,7 +559,6 @@ int initialise(const char* paramfile, const char* obstaclefile,
   if (*cells_ptr == NULL) die("cannot allocate memory for cells", __LINE__, __FILE__);
 
   /* 'helper' grid, used as scratch space */
-  //*tmp_cells_ptr = (t_speed*)malloc(sizeof(t_speed) * (params->ny * params->nx));
   t_speed *tmp_cells = malloc(sizeof(t_speed));
   *tmp_cells_ptr = tmp_cells;
 
@@ -693,7 +685,7 @@ float calc_reynolds(const t_param params, t_speed* cells, int* obstacles)
 
 float total_density(const t_param params, t_speed* cells)
 {
-  float total = 0.f;  /* accumulator */
+  float total = 0.f;
 
   for (int jj = 0; jj < params.ny; jj++)
   {
