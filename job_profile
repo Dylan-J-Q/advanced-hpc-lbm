@@ -2,7 +2,7 @@
 #SBATCH --job-name=d2q9-bgk-perf
 #SBATCH --nodes=1
 #SBATCH --time=00:10:00
-#SBATCH --cpus-per-task=144
+#SBATCH --cpus-per-task=1
 #SBATCH --exclusive
 #SBATCH --ntasks-per-node=1
 

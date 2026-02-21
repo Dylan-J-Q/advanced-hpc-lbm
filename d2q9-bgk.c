@@ -87,11 +87,6 @@ int initialise(const char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
                int** obstacles_ptr, float** av_vels_ptr);
 
-/*
-** The main calculation methods.
-** timestep calls, in order, the functions:
-** accelerate_flow(), propagate(), rebound() & collision()
-*/
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
 
@@ -230,7 +225,7 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
 {
     accelerate_flow(params, cells, obstacles);
 
-    // stream + bounce-back + collide: read cells, write tmp
+    // propagate rebound  collide
     propagate_rebound_collide(params,
         cells->speeds[0], cells->speeds[1], cells->speeds[2],
         cells->speeds[3], cells->speeds[4], cells->speeds[5],
@@ -252,29 +247,24 @@ int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obst
 
 int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict obstacles)
 {
-  /* compute weighting factors */
   float w1 = params.density * params.accel / 9.f;
   float w2 = params.density * params.accel / 36.f;
 
-  /* modify the 2nd row of the grid */
   int jj = params.ny - 2;
   int row = jj * params.nx;
 
   for (int ii = 0; ii < params.nx; ii++)
   {
     int idx = ii + row;
-    /* if the cell is not occupied and
-    ** we don't send a negative density */
+
     if (!obstacles[ii + jj*params.nx]
         && (cells->speeds[3][idx] - w1) > 0.f
         && (cells->speeds[6][idx] - w2) > 0.f
         && (cells->speeds[7][idx] - w2) > 0.f)
     {
-      /* increase 'east-side' densities */
       cells->speeds[1][idx] += w1;
       cells->speeds[5][idx] += w2;
       cells->speeds[8][idx] += w2;
-      /* decrease 'west-side' densities */
       cells->speeds[3][idx] -= w1;
       cells->speeds[6][idx] -= w2;
       cells->speeds[7][idx] -= w2;
@@ -294,7 +284,7 @@ static inline void collide_or_copy(
     float *o0,float *o1,float *o2,float *o3,float *o4,float *o5,float *o6,float *o7,float *o8
 ){
     if (is_obstacle) {
-        // obstacles do not collide, just keep post bounce back populations
+        // obstacles do not collide
         *o0 = s0; *o1 = s1; *o2 = s2; *o3 = s3; *o4 = s4;
         *o5 = s5; *o6 = s6; *o7 = s7; *o8 = s8;
         return;
