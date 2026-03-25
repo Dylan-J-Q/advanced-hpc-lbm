@@ -90,7 +90,7 @@ int initialise(const char* paramfile, const char* obstaclefile,
 int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles);
 int accelerate_flow(const t_param params, t_speed* cells, int* obstacles);
 
-int propagate_rebound_collide(
+float propagate_rebound_collide(
     const t_param params,
     const float * restrict c0,
     const float * restrict c1,
@@ -123,19 +123,6 @@ int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr
 ** The total should remain constant from one timestep to the next. */
 float total_density(const t_param params, t_speed* cells);
 
-/* compute average velocity */
-float av_velocity(const t_param params,
-              float * restrict c0,
-              float * restrict c1,
-              float * restrict c2,
-              float * restrict c3,
-              float * restrict c4,
-              float * restrict c5,
-              float * restrict c6,
-              float * restrict c7,
-              float * restrict c8, 
-              const int* obstacles);
-
 /* calculate Reynolds number */
 float calc_reynolds(const t_param params, t_speed* cells, int* obstacles);
 
@@ -156,8 +143,8 @@ int main(int argc, char* argv[])
   t_speed* tmp_cells = NULL;    /* scratch space */
   int*     obstacles = NULL;    /* grid indicating which cells are blocked */
   float* av_vels   = NULL;     /* a record of the av. velocity computed for each timestep */
-  struct timeval timstr;                                                             /* structure to hold elapsed time */
-  double tot_tic, tot_toc, init_tic, init_toc, comp_tic, comp_toc, col_tic, col_toc; /* floating point numbers to calculate elapsed wallclock time */
+  struct timeval timstr;
+  double tot_tic, tot_toc, init_tic, init_toc, comp_tic, comp_toc, col_tic, col_toc;
 
   /* parse the command line */
   if (argc != 3)
@@ -170,44 +157,53 @@ int main(int argc, char* argv[])
     obstaclefile = argv[2];
   }
 
-  /* Total/init time starts here: initialise our data structures and load values from file */
+  /* Total/init time starts here */
   gettimeofday(&timstr, NULL);
   tot_tic = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
-  init_tic=tot_tic;
+  init_tic = tot_tic;
   initialise(paramfile, obstaclefile, &params, &cells, &tmp_cells, &obstacles, &av_vels);
 
-  /* Init time stops here, compute time starts*/
+  /* Init time stops here, compute time starts */
   gettimeofday(&timstr, NULL);
   init_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
-  comp_tic=init_toc;
+  comp_tic = init_toc;
 
   for (int tt = 0; tt < params.maxIters; tt++)
   {
-    timestep(params, cells, tmp_cells, obstacles);
-    av_vels[tt] = av_velocity(params,
-          cells->speeds[0], cells->speeds[1], cells->speeds[2],
-          cells->speeds[3], cells->speeds[4], cells->speeds[5],
-          cells->speeds[6], cells->speeds[7], cells->speeds[8],
-          obstacles);
+    accelerate_flow(params, cells, obstacles);
+
+    /* single fused pass: propagate + rebound + collide + av_velocity */
+    av_vels[tt] = propagate_rebound_collide(params,
+        cells->speeds[0], cells->speeds[1], cells->speeds[2],
+        cells->speeds[3], cells->speeds[4], cells->speeds[5],
+        cells->speeds[6], cells->speeds[7], cells->speeds[8],
+        tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
+        tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
+        tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8],
+        obstacles);
+
+    /* swap pointers */
+    t_speed temp = *cells;
+    *cells = *tmp_cells;
+    *tmp_cells = temp;
+
 #ifdef DEBUG
     printf("==timestep: %d==\n", tt);
     printf("av velocity: %.12E\n", av_vels[tt]);
     printf("tot density: %.12E\n", total_density(params, cells));
 #endif
   }
-  
-  /* Compute time stops here, collate time starts*/
+
+  /* Compute time stops here, collate time starts */
   gettimeofday(&timstr, NULL);
   comp_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
-  col_tic=comp_toc;
+  col_tic = comp_toc;
 
-  // Collate data from ranks here 
-
-  /* Total/collate time stops here.*/
+  /* Total/collate time stops here */
   gettimeofday(&timstr, NULL);
   col_toc = timstr.tv_sec + (timstr.tv_usec / 1000000.0);
   tot_toc = col_toc;
-  
+
   /* write final values and free memory */
   printf("==done==\n");
   printf("Reynolds number:\t\t%.12E\n", calc_reynolds(params, cells, obstacles));
@@ -221,43 +217,20 @@ int main(int argc, char* argv[])
   return EXIT_SUCCESS;
 }
 
-int timestep(const t_param params, t_speed* cells, t_speed* tmp_cells, int* obstacles)
-{
-    accelerate_flow(params, cells, obstacles);
-
-    // propagate rebound  collide
-    propagate_rebound_collide(params,
-        cells->speeds[0], cells->speeds[1], cells->speeds[2],
-        cells->speeds[3], cells->speeds[4], cells->speeds[5],
-        cells->speeds[6], cells->speeds[7], cells->speeds[8],
-        tmp_cells->speeds[0], tmp_cells->speeds[1], tmp_cells->speeds[2],
-        tmp_cells->speeds[3], tmp_cells->speeds[4], tmp_cells->speeds[5],
-        tmp_cells->speeds[6], tmp_cells->speeds[7], tmp_cells->speeds[8],
-        obstacles
-    );
-
-    // swap pointers
-    t_speed temp = *cells;
-    *cells = *tmp_cells;
-    *tmp_cells = temp;
-
-    return EXIT_SUCCESS;
-}
-
 
 int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict obstacles)
 {
-  float w1 = params.density * params.accel / 9.f;
-  float w2 = params.density * params.accel / 36.f;
+  const float w1 = params.density * params.accel / 9.f;
+  const float w2 = params.density * params.accel / 36.f;
 
-  int jj = params.ny - 2;
-  int row = jj * params.nx;
+  const int jj  = params.ny - 2;
+  const int row = jj * params.nx;
 
   for (int ii = 0; ii < params.nx; ii++)
   {
-    int idx = ii + row;
+    const int idx = ii + row;
 
-    if (!obstacles[ii + jj*params.nx]
+    if (!obstacles[idx]
         && (cells->speeds[3][idx] - w1) > 0.f
         && (cells->speeds[6][idx] - w2) > 0.f
         && (cells->speeds[7][idx] - w2) > 0.f)
@@ -274,68 +247,70 @@ int accelerate_flow(const t_param params, t_speed* restrict cells, int* restrict
   return EXIT_SUCCESS;
 }
 
-#include <math.h>
-#include <stdlib.h>
 
-static inline void collide_or_copy(
-    int is_obstacle,
+/*
+** Perform BGK collision on a single non-obstacle cell.
+** Writes post-collision distributions into o0..o8.
+*/
+static inline void collide(
     float omega,
-    float s0,float s1,float s2,float s3,float s4,float s5,float s6,float s7,float s8,
-    float *o0,float *o1,float *o2,float *o3,float *o4,float *o5,float *o6,float *o7,float *o8
-){
-    if (is_obstacle) {
-        // obstacles do not collide
-        *o0 = s0; *o1 = s1; *o2 = s2; *o3 = s3; *o4 = s4;
-        *o5 = s5; *o6 = s6; *o7 = s7; *o8 = s8;
-        return;
-    }
+    float s0, float s1, float s2, float s3, float s4,
+    float s5, float s6, float s7, float s8,
+    float *o0, float *o1, float *o2, float *o3, float *o4,
+    float *o5, float *o6, float *o7, float *o8)
+{
+  const float w0 = 4.f / 9.f;
+  const float w1 = 1.f / 9.f;
+  const float w2 = 1.f / 36.f;
 
-    // collision
-    const float w0 = 4.f/9.f, w1 = 1.f/9.f, w2 = 1.f/36.f;
-    const float inv_c_sq = 3.f;
-    const float inv_2_c_sq = 1.5f;
-    const float inv_2_c_sq_sq = 4.5f;
+  float rho = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
+  if (rho <= 1e-20f) rho = 1e-20f;
+  const float inv_rho = 1.f / rho;
 
-    float rho = s0+s1+s2+s3+s4+s5+s6+s7+s8;
+  const float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
+  const float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
 
-    // avoid nans from rho being too small
-    if (rho <= 1e-20f) rho = 1e-20f;
+  const float u2     = ux * ux + uy * uy;
+  const float common = 1.f - 1.5f * u2;
 
-    float inv_rho = 1.f / rho;
+  float feq0 = w0 * rho * common;
+  float feq1 = w1 * rho * (common + 3.f * ux + 4.5f * ux * ux);
+  float feq2 = w1 * rho * (common + 3.f * uy + 4.5f * uy * uy);
+  float feq3 = w1 * rho * (common - 3.f * ux + 4.5f * ux * ux);
+  float feq4 = w1 * rho * (common - 3.f * uy + 4.5f * uy * uy);
 
-    float ux = (s1+s5+s8 - (s3+s6+s7)) * inv_rho;
-    float uy = (s2+s5+s6 - (s4+s7+s8)) * inv_rho;
+  float uxy;
+  uxy = ux + uy;
+  float feq5 = w2 * rho * (common + 3.f * uxy + 4.5f * uxy * uxy);
+  uxy = -ux + uy;
+  float feq6 = w2 * rho * (common + 3.f * uxy + 4.5f * uxy * uxy);
+  uxy = -ux - uy;
+  float feq7 = w2 * rho * (common + 3.f * uxy + 4.5f * uxy * uxy);
+  uxy = ux - uy;
+  float feq8 = w2 * rho * (common + 3.f * uxy + 4.5f * uxy * uxy);
 
-    float u2 = ux*ux + uy*uy;
-    float common = 1.f - inv_2_c_sq * u2;
-
-    float feq0 = w0 * rho * common;
-    float feq1 = w1 * rho * (common + inv_c_sq*ux + inv_2_c_sq_sq*ux*ux);
-    float feq2 = w1 * rho * (common + inv_c_sq*uy + inv_2_c_sq_sq*uy*uy);
-    float feq3 = w1 * rho * (common - inv_c_sq*ux + inv_2_c_sq_sq*ux*ux);
-    float feq4 = w1 * rho * (common - inv_c_sq*uy + inv_2_c_sq_sq*uy*uy);
-
-    float uxy = ux + uy;
-    float feq5 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
-    uxy = -ux + uy;
-    float feq6 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
-    uxy = -ux - uy;
-    float feq7 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
-    uxy = ux - uy;
-    float feq8 = w2 * rho * (common + inv_c_sq*uxy + inv_2_c_sq_sq*uxy*uxy);
-
-    *o0 = s0 + omega * (feq0 - s0);
-    *o1 = s1 + omega * (feq1 - s1);
-    *o2 = s2 + omega * (feq2 - s2);
-    *o3 = s3 + omega * (feq3 - s3);
-    *o4 = s4 + omega * (feq4 - s4);
-    *o5 = s5 + omega * (feq5 - s5);
-    *o6 = s6 + omega * (feq6 - s6);
-    *o7 = s7 + omega * (feq7 - s7);
-    *o8 = s8 + omega * (feq8 - s8);
+  *o0 = s0 + omega * (feq0 - s0);
+  *o1 = s1 + omega * (feq1 - s1);
+  *o2 = s2 + omega * (feq2 - s2);
+  *o3 = s3 + omega * (feq3 - s3);
+  *o4 = s4 + omega * (feq4 - s4);
+  *o5 = s5 + omega * (feq5 - s5);
+  *o6 = s6 + omega * (feq6 - s6);
+  *o7 = s7 + omega * (feq7 - s7);
+  *o8 = s8 + omega * (feq8 - s8);
 }
 
-int propagate_rebound_collide(
+
+/*
+** Single fused pass over the entire grid:
+**   1. Stream (propagate) from neighbours using periodic boundary wrapping
+**   2. Bounce-back for obstacle cells
+**   3. BGK collision for fluid cells
+**   4. Accumulate average velocity
+**
+** Returns the average velocity for this timestep.
+*/
+float propagate_rebound_collide(
     const t_param params,
     const float * restrict c0,
     const float * restrict c1,
@@ -355,210 +330,76 @@ int propagate_rebound_collide(
     float * restrict out6,
     float * restrict out7,
     float * restrict out8,
-    const int * restrict obstacles
-){
-    const int nx = params.nx;
-    const int ny = params.ny;
-    const float omega = params.omega;
+    const int * restrict obstacles)
+{
+  const int   nx    = params.nx;
+  const int   ny    = params.ny;
+  const float omega = params.omega;
 
-    //interior loop
-    for (int jj = 1; jj < ny - 1; ++jj) {
-        const int row       = jj * nx;
-        const int row_north = (jj + 1) * nx;
-        const int row_south = (jj - 1) * nx;
+  float tot_u    = 0.f;
+  int   tot_cells = 0;
 
-        #pragma omp simd
-        for (int ii = 1; ii < nx - 1; ++ii) {
-            const int idx = row + ii;
+  for (int jj = 0; jj < ny; ++jj)
+  {
+    const int row   = jj * nx;
+    const int row_s = ((jj == 0) ? ny - 1 : jj - 1) * nx;
+    const int row_n = ((jj == ny - 1) ? 0 : jj + 1) * nx;
 
-            // stream
-            float r0 = c0[idx];
-            float r1 = c1[idx - 1];
-            float r2 = c2[row_south + ii];
-            float r3 = c3[idx + 1];
-            float r4 = c4[row_north + ii];
-            float r5 = c5[row_south + ii - 1];
-            float r6 = c6[row_south + ii + 1];
-            float r7 = c7[row_north + ii + 1];
-            float r8 = c8[row_north + ii - 1];
+    for (int ii = 0; ii < nx; ++ii)
+    {
+      const int ii_w = (ii == 0) ? nx - 1 : ii - 1;
+      const int ii_e = (ii == nx - 1) ? 0 : ii + 1;
+      const int idx  = row + ii;
 
-            // bounce back if obstacle at destination cell
-            const int obs = obstacles[idx];
-            float s0 = r0;
-            float s1 = obs ? r3 : r1;
-            float s2 = obs ? r4 : r2;
-            float s3 = obs ? r1 : r3;
-            float s4 = obs ? r2 : r4;
-            float s5 = obs ? r7 : r5;
-            float s6 = obs ? r8 : r6;
-            float s7 = obs ? r5 : r7;
-            float s8 = obs ? r6 : r8;
+      /* --- 1. Stream: gather from neighbouring cells --- */
+      const float r0 = c0[idx];
+      const float r1 = c1[row   + ii_w];
+      const float r2 = c2[row_s + ii];
+      const float r3 = c3[row   + ii_e];
+      const float r4 = c4[row_n + ii];
+      const float r5 = c5[row_s + ii_w];
+      const float r6 = c6[row_s + ii_e];
+      const float r7 = c7[row_n + ii_e];
+      const float r8 = c8[row_n + ii_w];
 
-            // collide
-            collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                            &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                            &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-        }
+      /* --- 2. Bounce-back for obstacles --- */
+      const int obs = obstacles[idx];
+
+      if (obs)
+      {
+        /* Reverse directions */
+        out0[idx] = r0;
+        out1[idx] = r3;
+        out2[idx] = r4;
+        out3[idx] = r1;
+        out4[idx] = r2;
+        out5[idx] = r7;
+        out6[idx] = r8;
+        out7[idx] = r5;
+        out8[idx] = r6;
+      }
+      else
+      {
+        /* --- 3. BGK collision --- */
+        collide(omega,
+                r0, r1, r2, r3, r4, r5, r6, r7, r8,
+                &out0[idx], &out1[idx], &out2[idx], &out3[idx], &out4[idx],
+                &out5[idx], &out6[idx], &out7[idx], &out8[idx]);
+
+        /* --- 4. Accumulate average velocity --- */
+        const float rho = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8;
+        const float inv_rho = 1.f / rho;
+        const float ux = (r1 + r5 + r8 - (r3 + r6 + r7)) * inv_rho;
+        const float uy = (r2 + r5 + r6 - (r4 + r7 + r8)) * inv_rho;
+        tot_u += sqrtf(ux * ux + uy * uy);
+        tot_cells++;
+      }
     }
+  }
 
-    
-    //calculate top and bottom rows
-    const int row_top        = 0;
-    const int row_north_top  = nx;
-    const int row_south_top  = (ny - 1) * nx;
-
-    const int jj_bot         = ny - 1;
-    const int row_bot        = jj_bot * nx;
-    const int row_north_bot  = 0;
-    const int row_south_bot  = (jj_bot - 1) * nx;
-
-    for (int ii = 0; ii < nx; ++ii) {
-        const int ii_w = (ii == 0)    ? nx - 1 : ii - 1;
-        const int ii_e = (ii == nx-1) ? 0      : ii + 1;
-
-        //top
-        {
-        const int idx = row_top + ii;
-
-        //stream
-        float r0 = c0[idx];
-        float r1 = c1[row_top + ii_w];
-        float r2 = c2[row_south_top + ii];
-        float r3 = c3[row_top + ii_e];
-        float r4 = c4[row_north_top + ii];
-        float r5 = c5[row_south_top + ii_w];
-        float r6 = c6[row_south_top + ii_e];
-        float r7 = c7[row_north_top + ii_e];
-        float r8 = c8[row_north_top + ii_w];
-
-        //bounce back
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        //collide
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-    
-        }
-
-        //bottom row
-        {
-        const int idx = row_bot + ii;
-
-        //stream
-        float r0 = c0[idx];
-        float r1 = c1[row_bot + ii_w];
-        float r2 = c2[row_south_bot + ii];
-        float r3 = c3[row_bot + ii_e];
-        float r4 = c4[row_north_bot + ii];
-        float r5 = c5[row_south_bot + ii_w];
-        float r6 = c6[row_south_bot + ii_e];
-        float r7 = c7[row_north_bot + ii_e];
-        float r8 = c8[row_north_bot + ii_w];
-
-        //bounce back
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        //collide
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-      
-        }
-    }
-
-    //left and right columns
-    for (int jj = 1; jj < ny - 1; ++jj) {
-        const int row       = jj * nx;
-        const int row_north = (jj + 1) * nx;
-        const int row_south = (jj - 1) * nx;
-
-        //left column
-        {
-        const int idx  = row;
-        const int ii_w = nx - 1;
-        const int ii_e = 1;
-
-        float r0 = c0[idx];
-        float r1 = c1[row + ii_w];
-        float r2 = c2[row_south];
-        float r3 = c3[row + ii_e];
-        float r4 = c4[row_north];
-        float r5 = c5[row_south + ii_w];
-        float r6 = c6[row_south + ii_e];
-        float r7 = c7[row_north + ii_e];
-        float r8 = c8[row_north + ii_w];
-
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-        }
-
-        //right
-        {
-        const int ii  = nx - 1;
-        const int idx = row + ii;
-        const int ii_w = ii - 1;
-        const int ii_e = 0;
-
-        float r0 = c0[idx];
-        float r1 = c1[row + ii_w];
-        float r2 = c2[row_south + ii];
-        float r3 = c3[row + ii_e];
-        float r4 = c4[row_north + ii];
-        float r5 = c5[row_south + ii_w];
-        float r6 = c6[row_south + ii_e];
-        float r7 = c7[row_north + ii_e];
-        float r8 = c8[row_north + ii_w];
-
-        const int obs = obstacles[idx];
-        float s0 = r0;
-        float s1 = obs ? r3 : r1;
-        float s2 = obs ? r4 : r2;
-        float s3 = obs ? r1 : r3;
-        float s4 = obs ? r2 : r4;
-        float s5 = obs ? r7 : r5;
-        float s6 = obs ? r8 : r6;
-        float s7 = obs ? r5 : r7;
-        float s8 = obs ? r6 : r8;
-
-        collide_or_copy(obs, omega, s0,s1,s2,s3,s4,s5,s6,s7,s8,
-                        &out0[idx],&out1[idx],&out2[idx],&out3[idx],&out4[idx],
-                        &out5[idx],&out6[idx],&out7[idx],&out8[idx]);
-        }
-    }
-
-    return EXIT_SUCCESS;
+  return (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
 }
+
 
 float av_velocity(const t_param params,
               float * restrict c0,
@@ -569,217 +410,138 @@ float av_velocity(const t_param params,
               float * restrict c5,
               float * restrict c6,
               float * restrict c7,
-              float * restrict c8, 
+              float * restrict c8,
               const int* obstacles)
 {
-    const int nx = params.nx;
-    const int ny = params.ny;
-    const int n  = nx * ny;
+  const int n = params.nx * params.ny;
 
-    float tot_u = 0.f;
-    int tot_cells = 0;
+  float tot_u    = 0.f;
+  int   tot_cells = 0;
 
-    for (int idx = 0; idx < n; ++idx)
-    {
-        //skip obstacles
-        if (obstacles[idx]) continue;
+  for (int idx = 0; idx < n; ++idx)
+  {
+    if (obstacles[idx]) continue;
 
-        //load
-        float s0 = c0[idx];
-        float s1 = c1[idx];
-        float s2 = c2[idx];
-        float s3 = c3[idx];
-        float s4 = c4[idx];
-        float s5 = c5[idx];
-        float s6 = c6[idx];
-        float s7 = c7[idx];
-        float s8 = c8[idx];
+    const float s0 = c0[idx], s1 = c1[idx], s2 = c2[idx];
+    const float s3 = c3[idx], s4 = c4[idx], s5 = c5[idx];
+    const float s6 = c6[idx], s7 = c7[idx], s8 = c8[idx];
 
-        //compute density
-        float rho = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
-        float inv_rho = 1.f / rho;
+    const float rho     = s0 + s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8;
+    const float inv_rho = 1.f / rho;
 
-        //velocity components
-        float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
-        float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
+    const float ux = (s1 + s5 + s8 - (s3 + s6 + s7)) * inv_rho;
+    const float uy = (s2 + s5 + s6 - (s4 + s7 + s8)) * inv_rho;
 
-        //acc magnitude
-        tot_u += sqrtf(ux*ux + uy*uy);
-        tot_cells++;
-    }
+    tot_u += sqrtf(ux * ux + uy * uy);
+    tot_cells++;
+  }
 
-    return (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
+  return (tot_cells > 0) ? tot_u / (float)tot_cells : 0.f;
 }
-
 
 
 int initialise(const char* paramfile, const char* obstaclefile,
                t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
                int** obstacles_ptr, float** av_vels_ptr)
 {
-  char   message[1024];  /* message buffer */
-  FILE*   fp;            /* file pointer */
-  int    xx, yy;         /* generic array indices */
-  int    blocked;        /* indicates whether a cell is blocked by an obstacle */
-  int    retval;         /* to hold return value for checking */
+  char   message[1024];
+  FILE*  fp;
+  int    xx, yy;
+  int    blocked;
+  int    retval;
 
-  /* open the parameter file */
   fp = fopen(paramfile, "r");
-
   if (fp == NULL)
   {
     sprintf(message, "could not open input parameter file: %s", paramfile);
     die(message, __LINE__, __FILE__);
   }
 
-  /* read in the parameter values */
   retval = fscanf(fp, "%d\n", &(params->nx));
-
   if (retval != 1) die("could not read param file: nx", __LINE__, __FILE__);
 
   retval = fscanf(fp, "%d\n", &(params->ny));
-
   if (retval != 1) die("could not read param file: ny", __LINE__, __FILE__);
 
   retval = fscanf(fp, "%d\n", &(params->maxIters));
-
   if (retval != 1) die("could not read param file: maxIters", __LINE__, __FILE__);
 
   retval = fscanf(fp, "%d\n", &(params->reynolds_dim));
-
   if (retval != 1) die("could not read param file: reynolds_dim", __LINE__, __FILE__);
 
   retval = fscanf(fp, "%f\n", &(params->density));
-
   if (retval != 1) die("could not read param file: density", __LINE__, __FILE__);
 
   retval = fscanf(fp, "%f\n", &(params->accel));
-
   if (retval != 1) die("could not read param file: accel", __LINE__, __FILE__);
 
   retval = fscanf(fp, "%f\n", &(params->omega));
-
   if (retval != 1) die("could not read param file: omega", __LINE__, __FILE__);
 
-  /* and close up the file */
   fclose(fp);
 
-  /*
-  ** Allocate memory.
-  **
-  ** Remember C is pass-by-value, so we need to
-  ** pass pointers into the initialise function.
-  **
-  ** NB we are allocating a 1D array, so that the
-  ** memory will be contiguous.  We still want to
-  ** index this memory as if it were a (row major
-  ** ordered) 2D array, however.  We will perform
-  ** some arithmetic using the row and column
-  ** coordinates, inside the square brackets, when
-  ** we want to access elements of this array.
-  **
-  ** Note also that we are using a structure to
-  ** hold an array of 'speeds'.  We will allocate
-  ** a 1D array of these structs.
-  */
-
-  /* main grid */
-  //*cells_ptr = (t_speed*)malloc(sizeof(t_speed) * (params->ny * params->nx));
   int n_cells = params->nx * params->ny;
 
   t_speed *cells = malloc(sizeof(t_speed));
   *cells_ptr = cells;
-
   if (*cells_ptr == NULL) die("cannot allocate memory for cells", __LINE__, __FILE__);
 
-  /* 'helper' grid, used as scratch space */
-  //*tmp_cells_ptr = (t_speed*)malloc(sizeof(t_speed) * (params->ny * params->nx));
   t_speed *tmp_cells = malloc(sizeof(t_speed));
   *tmp_cells_ptr = tmp_cells;
-
   if (*tmp_cells_ptr == NULL) die("cannot allocate memory for tmp_cells", __LINE__, __FILE__);
 
-  /* the map of obstacles */
-  *obstacles_ptr = malloc(sizeof(int) * (params->ny * params->nx));
-
+  *obstacles_ptr = malloc(sizeof(int) * n_cells);
   if (*obstacles_ptr == NULL) die("cannot allocate column memory for obstacles", __LINE__, __FILE__);
 
-  
-  for(int k =0; k < NSPEEDS; k++){
-    cells->speeds[k] = malloc(n_cells * sizeof(float));
+  for (int k = 0; k < NSPEEDS; k++)
+  {
+    cells->speeds[k]     = malloc(n_cells * sizeof(float));
     tmp_cells->speeds[k] = malloc(n_cells * sizeof(float));
-    
-    if (!cells->speeds[k] || !tmp_cells->speeds[k]) {
+    if (!cells->speeds[k] || !tmp_cells->speeds[k])
       die("cannot allocate speeds", __LINE__, __FILE__);
-    }
   }
 
   /* initialise densities */
-  float w0 = params->density * 4.f / 9.f;
-  float w1 = params->density      / 9.f;
-  float w2 = params->density      / 36.f;
+  const float w0 = params->density * 4.f / 9.f;
+  const float w1 = params->density       / 9.f;
+  const float w2 = params->density       / 36.f;
 
-  for (int jj = 0; jj < params->ny; jj++)
+  for (int idx = 0; idx < n_cells; idx++)
   {
-    for (int ii = 0; ii < params->nx; ii++)
-    {
-      int idx = ii + jj * params->nx;
-
-      cells->speeds[0][idx] = w0;
-
-      cells->speeds[1][idx] = w1;
-      cells->speeds[2][idx] = w1;
-      cells->speeds[3][idx] = w1;
-      cells->speeds[4][idx] = w1;
-
-      cells->speeds[5][idx] = w2;
-      cells->speeds[6][idx] = w2;
-      cells->speeds[7][idx] = w2;
-      cells->speeds[8][idx] = w2;
-    }
+    cells->speeds[0][idx] = w0;
+    cells->speeds[1][idx] = w1;
+    cells->speeds[2][idx] = w1;
+    cells->speeds[3][idx] = w1;
+    cells->speeds[4][idx] = w1;
+    cells->speeds[5][idx] = w2;
+    cells->speeds[6][idx] = w2;
+    cells->speeds[7][idx] = w2;
+    cells->speeds[8][idx] = w2;
   }
 
-  /* first set all cells in obstacle array to zero */
-  for (int jj = 0; jj < params->ny; jj++)
-  {
-    for (int ii = 0; ii < params->nx; ii++)
-    {
-      (*obstacles_ptr)[ii + jj*params->nx] = 0;
-    }
-  }
+  /* set all cells in obstacle array to zero */
+  for (int idx = 0; idx < n_cells; idx++)
+    (*obstacles_ptr)[idx] = 0;
 
   /* open the obstacle data file */
   fp = fopen(obstaclefile, "r");
-
   if (fp == NULL)
   {
     sprintf(message, "could not open input obstacles file: %s", obstaclefile);
     die(message, __LINE__, __FILE__);
   }
 
-  /* read-in the blocked cells list */
   while ((retval = fscanf(fp, "%d %d %d\n", &xx, &yy, &blocked)) != EOF)
   {
-    /* some checks */
     if (retval != 3) die("expected 3 values per line in obstacle file", __LINE__, __FILE__);
-
     if (xx < 0 || xx > params->nx - 1) die("obstacle x-coord out of range", __LINE__, __FILE__);
-
     if (yy < 0 || yy > params->ny - 1) die("obstacle y-coord out of range", __LINE__, __FILE__);
-
     if (blocked != 1) die("obstacle blocked value should be 1", __LINE__, __FILE__);
-
-    /* assign to array */
-    (*obstacles_ptr)[xx + yy*params->nx] = blocked;
+    (*obstacles_ptr)[xx + yy * params->nx] = blocked;
   }
 
-  /* and close the file */
   fclose(fp);
 
-  /*
-  ** allocate space to hold a record of the avarage velocities computed
-  ** at each timestep
-  */
   *av_vels_ptr = (float*)malloc(sizeof(float) * params->maxIters);
 
   return EXIT_SUCCESS;
@@ -788,9 +550,12 @@ int initialise(const char* paramfile, const char* obstaclefile,
 int finalise(const t_param* params, t_speed** cells_ptr, t_speed** tmp_cells_ptr,
              int** obstacles_ptr, float** av_vels_ptr)
 {
-  /*
-  ** free up allocated memory
-  */
+  for (int k = 0; k < NSPEEDS; k++)
+  {
+    free((*cells_ptr)->speeds[k]);
+    free((*tmp_cells_ptr)->speeds[k]);
+  }
+
   free(*cells_ptr);
   *cells_ptr = NULL;
 
@@ -820,99 +585,70 @@ float calc_reynolds(const t_param params, t_speed* cells, int* obstacles)
 
 float total_density(const t_param params, t_speed* cells)
 {
-  float total = 0.f;  /* accumulator */
+  float total = 0.f;
+  const int n = params.nx * params.ny;
 
-  for (int jj = 0; jj < params.ny; jj++)
-  {
-    for (int ii = 0; ii < params.nx; ii++)
-    {
-      for (int kk = 0; kk < NSPEEDS; kk++)
-      {
-        total += cells->speeds[kk][ii + jj*params.nx];
-      }
-    }
-  }
+  for (int idx = 0; idx < n; idx++)
+    for (int kk = 0; kk < NSPEEDS; kk++)
+      total += cells->speeds[kk][idx];
 
   return total;
 }
 
 int write_values(const t_param params, t_speed* cells, int* obstacles, float* av_vels)
 {
-  FILE* fp;                     /* file pointer */
-  const float c_sq = 1.f / 3.f; /* sq. of speed of sound */
-  float local_density;         /* per grid cell sum of densities */
-  float pressure;              /* fluid pressure in grid cell */
-  float u_x;                   /* x-component of velocity in grid cell */
-  float u_y;                   /* y-component of velocity in grid cell */
-  float u;                     /* norm--root of summed squares--of u_x and u_y */
+  FILE* fp;
+  const float c_sq = 1.f / 3.f;
+  float local_density;
+  float pressure;
+  float u_x, u_y, u;
 
   fp = fopen(FINALSTATEFILE, "w");
-
   if (fp == NULL)
-  {
     die("could not open file output file", __LINE__, __FILE__);
-  }
 
   for (int jj = 0; jj < params.ny; jj++)
   {
     for (int ii = 0; ii < params.nx; ii++)
     {
-      /* an occupied cell */
-      if (obstacles[ii + jj*params.nx])
+      const int idx = ii + jj * params.nx;
+
+      if (obstacles[idx])
       {
         u_x = u_y = u = 0.f;
         pressure = params.density * c_sq;
       }
-      /* no obstacle */
       else
       {
         local_density = 0.f;
-
         for (int kk = 0; kk < NSPEEDS; kk++)
-        {
-          local_density += cells->speeds[kk][ii + jj*params.nx];
-        }
+          local_density += cells->speeds[kk][idx];
 
-        /* compute x velocity component */
-        u_x = (cells->speeds[1][ii + jj*params.nx]
-               + cells->speeds[5][ii + jj*params.nx]
-               + cells->speeds[8][ii + jj*params.nx]
-               - (cells->speeds[3][ii + jj*params.nx]
-                  + cells->speeds[6][ii + jj*params.nx]
-                  + cells->speeds[7][ii + jj*params.nx]))
+        u_x = (cells->speeds[1][idx] + cells->speeds[5][idx] + cells->speeds[8][idx]
+             - (cells->speeds[3][idx] + cells->speeds[6][idx] + cells->speeds[7][idx]))
               / local_density;
-        /* compute y velocity component */
-        u_y = (cells->speeds[2][ii + jj*params.nx]
-               + cells->speeds[5][ii + jj*params.nx]
-               + cells->speeds[6][ii + jj*params.nx]
-               - (cells->speeds[4][ii + jj*params.nx]
-                  + cells->speeds[7][ii + jj*params.nx]
-                  + cells->speeds[8][ii + jj*params.nx]))
+
+        u_y = (cells->speeds[2][idx] + cells->speeds[5][idx] + cells->speeds[6][idx]
+             - (cells->speeds[4][idx] + cells->speeds[7][idx] + cells->speeds[8][idx]))
               / local_density;
-        /* compute norm of velocity */
-        u = sqrtf((u_x * u_x) + (u_y * u_y));
-        /* compute pressure */
+
+        u = sqrtf(u_x * u_x + u_y * u_y);
         pressure = local_density * c_sq;
       }
 
-      /* write to file */
-      fprintf(fp, "%d %d %.12E %.12E %.12E %.12E %d\n", ii, jj, u_x, u_y, u, pressure, obstacles[ii + params.nx * jj]);
+      fprintf(fp, "%d %d %.12E %.12E %.12E %.12E %d\n",
+              ii, jj, u_x, u_y, u, pressure, obstacles[idx]);
     }
   }
 
   fclose(fp);
 
   fp = fopen(AVVELSFILE, "w");
-
   if (fp == NULL)
-  {
     die("could not open file output file", __LINE__, __FILE__);
-  }
 
   for (int ii = 0; ii < params.maxIters; ii++)
-  {
     fprintf(fp, "%d:\t%.12E\n", ii, av_vels[ii]);
-  }
 
   fclose(fp);
 
