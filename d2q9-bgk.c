@@ -1,25 +1,3 @@
-/*
-** MPI-parallel d2q9-bgk lattice Boltzmann code.
-**
-** 1D row decomposition: the global ny rows are split across ranks.
-** Each rank owns local_ny rows and maintains one halo (ghost) row
-** above and below for streaming across rank boundaries.
-**
-** Memory layout per rank (each speed array):
-**
-**   row 0                 = south halo  (copy of neighbour's top real row)
-**   rows 1 .. local_ny    = real rows   (this rank's data)
-**   row local_ny + 1      = north halo  (copy of neighbour's bottom real row)
-**
-** The 'speeds' in each cell are numbered as follows:
-**
-** 6 2 5
-**  \|/
-** 3-0-1
-**  /|\
-** 7 4 8
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,10 +8,6 @@
 #define NSPEEDS         9
 #define FINALSTATEFILE  "final_state.dat"
 #define AVVELSFILE      "av_vels.dat"
-
-/* ------------------------------------------------------------------ */
-/*  Data structures                                                    */
-/* ------------------------------------------------------------------ */
 
 typedef struct {
   int   nx;
@@ -58,10 +32,6 @@ typedef struct {
   int rank_north;
   int alloc_rows;
 } t_decomp;
-
-/* ------------------------------------------------------------------ */
-/*  Prototypes                                                         */
-/* ------------------------------------------------------------------ */
 
 void compute_decomposition(int rank, int nprocs, int ny, t_decomp *d);
 
@@ -91,10 +61,6 @@ float calc_reynolds(const t_param params, const t_decomp *d,
                     const t_speed *cells, const int *obstacles);
 
 void die(const char *msg, const int line, const char *file);
-
-/* ------------------------------------------------------------------ */
-/*  Collision kernel (unchanged from serial)                           */
-/* ------------------------------------------------------------------ */
 
 static inline void collide(
     float omega,
@@ -140,10 +106,6 @@ static inline void collide(
   *o8 = s8 + omega * (feq8 - s8);
 }
 
-/* ================================================================== */
-/*  main                                                               */
-/* ================================================================== */
-
 int main(int argc, char *argv[])
 {
   MPI_Init(&argc, &argv);
@@ -177,7 +139,7 @@ int main(int argc, char *argv[])
   double init_toc = timstr.tv_sec + timstr.tv_usec / 1e6;
   double comp_tic = init_toc;
 
-  /* ---- timestep loop ---- */
+  //timestep loop
   for (int tt = 0; tt < params.maxIters; tt++)
   {
     accelerate_flow(params, &decomp, cells, obstacles);
@@ -189,7 +151,7 @@ int main(int argc, char *argv[])
     propagate_rebound_collide(params, &decomp, cells, tmp_cells,
                               obstacles, &local_tot_u, &local_tot_cells);
 
-    /* reduce partial sums to get global average velocity */
+    // reduce partial sums to get global average velocity
     float global_tot_u;
     int   global_tot_cells;
     MPI_Allreduce(&local_tot_u,    &global_tot_u,    1,
@@ -201,7 +163,7 @@ int main(int argc, char *argv[])
                 ? global_tot_u / (float)global_tot_cells
                 : 0.f;
 
-    /* swap grids */
+    // swap grids 
     t_speed temp = *cells;
     *cells       = *tmp_cells;
     *tmp_cells   = temp;
@@ -224,10 +186,12 @@ int main(int argc, char *argv[])
   double col_toc = timstr.tv_sec + timstr.tv_usec / 1e6;
   double tot_toc = col_toc;
 
+  /* All ranks must participate in the MPI_Reduce inside calc_reynolds */
+  float reynolds = calc_reynolds(params, &decomp, cells, obstacles);
+
   if (rank == 0) {
     printf("==done==\n");
-    printf("Reynolds number:\t\t%.12E\n",
-           calc_reynolds(params, &decomp, cells, obstacles));
+    printf("Reynolds number:\t\t%.12E\n", reynolds);
     printf("Elapsed Init time:\t\t\t%.6lf (s)\n",    init_toc - init_tic);
     printf("Elapsed Compute time:\t\t\t%.6lf (s)\n", comp_toc - comp_tic);
     printf("Elapsed Collate time:\t\t\t%.6lf (s)\n", col_toc  - col_tic);
@@ -238,10 +202,6 @@ int main(int argc, char *argv[])
   MPI_Finalize();
   return EXIT_SUCCESS;
 }
-
-/* ================================================================== */
-/*  Domain decomposition                                               */
-/* ================================================================== */
 
 void compute_decomposition(int rank, int nprocs, int ny, t_decomp *d)
 {
@@ -260,15 +220,12 @@ void compute_decomposition(int rank, int nprocs, int ny, t_decomp *d)
   d->alloc_rows = d->local_ny + 2;
 }
 
-/* ================================================================== */
-/*  Halo exchange (non-blocking for all 9 speeds)                      */
-/* ================================================================== */
-
 void halo_exchange(t_speed *cells, const t_decomp *d, int nx)
 {
   const int local_ny = d->local_ny;
 
   MPI_Request reqs[4 * NSPEEDS];
+  MPI_Status  stats[4 * NSPEEDS];
   int nreqs = 0;
 
   for (int k = 0; k < NSPEEDS; k++) {
@@ -289,12 +246,8 @@ void halo_exchange(t_speed *cells, const t_decomp *d, int nx)
               d->rank_north, k,           MPI_COMM_WORLD, &reqs[nreqs++]);
   }
 
-  MPI_Waitall(nreqs, reqs, MPI_STATUSES_IGNORE);
+  MPI_Waitall(nreqs, reqs, stats);
 }
-
-/* ================================================================== */
-/*  Accelerate flow (only the rank owning global row ny-2)             */
-/* ================================================================== */
 
 void accelerate_flow(const t_param params, const t_decomp *d,
                      t_speed *cells, const int *obstacles)
@@ -330,10 +283,6 @@ void accelerate_flow(const t_param params, const t_decomp *d,
     }
   }
 }
-
-/* ================================================================== */
-/*  Fused propagate + rebound + collide  (single pass, local grid)     */
-/* ================================================================== */
 
 void propagate_rebound_collide(
     const t_param params, const t_decomp *d,
@@ -408,10 +357,6 @@ void propagate_rebound_collide(
   *local_tot_u     = tot_u;
   *local_tot_cells = tot_c;
 }
-
-/* ================================================================== */
-/*  Initialise                                                         */
-/* ================================================================== */
 
 void initialise(const char *paramfile, const char *obstaclefile,
                 t_param *params, t_decomp *decomp,
@@ -528,10 +473,6 @@ void initialise(const char *paramfile, const char *obstaclefile,
   *obstacles_ptr = local_obs;
 }
 
-/* ================================================================== */
-/*  Gather + write output (rank 0 only)                                */
-/* ================================================================== */
-
 void gather_and_write(const t_param params, const t_decomp *d,
                       const t_speed *cells, const int *obstacles,
                       const float *av_vels)
@@ -611,10 +552,6 @@ void gather_and_write(const t_param params, const t_decomp *d,
   free(rdispls);
 }
 
-/* ================================================================== */
-/*  Reynolds number (distributed reduction)                            */
-/* ================================================================== */
-
 float calc_reynolds(const t_param params, const t_decomp *d,
                     const t_speed *cells, const int *obstacles)
 {
@@ -655,10 +592,6 @@ float calc_reynolds(const t_param params, const t_decomp *d,
   return 0.f;
 }
 
-/* ================================================================== */
-/*  Finalise                                                           */
-/* ================================================================== */
-
 void finalise(t_speed **cells_ptr, t_speed **tmp_cells_ptr,
               int **obstacles_ptr, float **av_vels_ptr)
 {
@@ -671,10 +604,6 @@ void finalise(t_speed **cells_ptr, t_speed **tmp_cells_ptr,
   free(*obstacles_ptr); *obstacles_ptr = NULL;
   free(*av_vels_ptr);   *av_vels_ptr   = NULL;
 }
-
-/* ================================================================== */
-/*  Utilities                                                          */
-/* ================================================================== */
 
 void die(const char *msg, const int line, const char *file)
 {
