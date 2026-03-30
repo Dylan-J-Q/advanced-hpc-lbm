@@ -5,8 +5,8 @@ EXE=d2q9-bgk
 #CC=gcc
 CC=mpicc
 #CFLAGS= -std=c99 -pg -fopenmp -Wall -O3 -ffast-math -march=native -funroll-loops #-fopt-info-vec-optimized -fopt-info-vec-missed
-CFLAGS= -std=c99 -Wall -O3 -ffast-math -march=native -funroll-loops -fopenmp-simd
-#CFLAGS= -std=c99 -Wall -O3 -ffast-math -march=native -funroll-loops -fopenmp-simd -DPROFILE
+CFLAGS= -std=c99 -Wall -O3 -ffast-math -march=native -funroll-loops -fopenmp-simd -D_POSIX_C_SOURCE=200112L
+#CFLAGS= -std=c99 -Wall -O3 -ffast-math -march=native -funroll-loops -fopenmp-simd -D_POSIX_C_SOURCE=200112L -DPROFILE
 
 LIBS = -lm
 
