@@ -8,6 +8,7 @@
 #define NSPEEDS         9
 #define FINALSTATEFILE  "final_state.dat"
 #define AVVELSFILE      "av_vels.dat"
+#define ALIGNMENT       64
 
 typedef struct {
   int   nx;
@@ -62,11 +63,6 @@ void compute_rows(const t_param params, int jj_lo, int jj_hi,
                   const t_speed *cells, t_speed *tmp_cells,
                   const int *obstacles, float *tot_u);
 
-void compute_single_col(const t_param params, int jj_lo, int jj_hi, int ii,
-                        int ii_w, int ii_e,
-                        const t_speed *cells, t_speed *tmp_cells,
-                        const int *obstacles, float *tot_u);
-
 void gather_and_write(const t_param params, const t_decomp *d,
                       const t_speed *cells, const int *obstacles,
                       const float *av_vels);
@@ -76,64 +72,14 @@ float calc_reynolds(const t_param params, const t_decomp *d,
 
 void die(const char *msg, const int line, const char *file);
 
-static inline void stream_collide_cell(
-    float omega, int obs,
-    float r0, float r1, float r2, float r3, float r4,
-    float r5, float r6, float r7, float r8,
-    float *o0, float *o1, float *o2, float *o3, float *o4,
-    float *o5, float *o6, float *o7, float *o8,
-    float *vel_acc)
+
+static inline float *alloc_floats(int n)
 {
-  const float w0 = 4.f / 9.f;
-  const float w1 = 1.f / 9.f;
-  const float w2 = 1.f / 36.f;
-
-  float rho = r0 + r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8;
-  if (rho <= 1e-20f) rho = 1e-20f;
-  const float inv_rho = 1.f / rho;
-
-  const float ux = (r1 + r5 + r8 - (r3 + r6 + r7)) * inv_rho;
-  const float uy = (r2 + r5 + r6 - (r4 + r7 + r8)) * inv_rho;
-
-  const float u2     = ux * ux + uy * uy;
-  const float common = 1.f - 1.5f * u2;
-
-  float feq0 = w0 * rho * common;
-  float feq1 = w1 * rho * (common + 3.f * ux  + 4.5f * ux * ux);
-  float feq2 = w1 * rho * (common + 3.f * uy  + 4.5f * uy * uy);
-  float feq3 = w1 * rho * (common - 3.f * ux  + 4.5f * ux * ux);
-  float feq4 = w1 * rho * (common - 3.f * uy  + 4.5f * uy * uy);
-
-  float uxy;
-  uxy =  ux + uy; float feq5 = w2 * rho * (common + 3.f*uxy + 4.5f*uxy*uxy);
-  uxy = -ux + uy; float feq6 = w2 * rho * (common + 3.f*uxy + 4.5f*uxy*uxy);
-  uxy = -ux - uy; float feq7 = w2 * rho * (common + 3.f*uxy + 4.5f*uxy*uxy);
-  uxy =  ux - uy; float feq8 = w2 * rho * (common + 3.f*uxy + 4.5f*uxy*uxy);
-
-  float col0 = r0 + omega * (feq0 - r0);
-  float col1 = r1 + omega * (feq1 - r1);
-  float col2 = r2 + omega * (feq2 - r2);
-  float col3 = r3 + omega * (feq3 - r3);
-  float col4 = r4 + omega * (feq4 - r4);
-  float col5 = r5 + omega * (feq5 - r5);
-  float col6 = r6 + omega * (feq6 - r6);
-  float col7 = r7 + omega * (feq7 - r7);
-  float col8 = r8 + omega * (feq8 - r8);
-
-  const float f = (float)(1 - obs);
-  const float o = (float)obs;
-
-  *o0 = f * col0 + o * r0;
-  *o1 = f * col1 + o * r3;
-  *o2 = f * col2 + o * r4;
-  *o3 = f * col3 + o * r1;
-  *o4 = f * col4 + o * r2;
-  *o5 = f * col5 + o * r7;
-  *o6 = f * col6 + o * r8;
-  *o7 = f * col7 + o * r5;
-  *o8 = f * col8 + o * r6;
-
-  *vel_acc += f * sqrtf(u2);
+  float *p = NULL;
+  if (posix_memalign((void **)&p, ALIGNMENT, n * sizeof(float)) != 0)
+    return NULL;
+  memset(p, 0, n * sizeof(float));
+  return p;
 }
 
 int main(int argc, char *argv[])
@@ -178,44 +124,41 @@ int main(int argc, char *argv[])
 
   const int local_ny = decomp.local_ny;
 
+#ifdef PROFILE
   double t_accel = 0.0, t_halo = 0.0, t_interior = 0.0;
   double t_boundary = 0.0, t_reduce = 0.0;
+  double t0, t1;
+  #define TSTART() do { t0 = MPI_Wtime(); } while(0)
+  #define TSTOP(v) do { t1 = MPI_Wtime(); v += t1 - t0; } while(0)
+#else
+  #define TSTART() ((void)0)
+  #define TSTOP(v) ((void)0)
+#endif
 
-  //timestep
   for (int tt = 0; tt < params.maxIters; tt++)
   {
-    double t0, t1;
-
-    //accelerate
-    t0 = MPI_Wtime();
+    TSTART();
     accelerate_flow(params, &decomp, cells, obstacles);
-    t1 = MPI_Wtime();
-    t_accel += t1 - t0;
+    TSTOP(t_accel);
 
-    //halo start
-    t0 = MPI_Wtime();
+    TSTART();
     MPI_Request halo_reqs[4];
     halo_exchange_start(cells, &decomp, params.nx, halo_reqs);
-    t1 = MPI_Wtime();
-    t_halo += t1 - t0;
+    TSTOP(t_halo);
 
-    //compute interiors
-    t0 = MPI_Wtime();
+    TSTART();
     float tot_u = 0.f;
     if (local_ny > 2) {
       compute_rows(params, 2, local_ny - 1,
                    cells, tmp_cells, obstacles, &tot_u);
     }
-    t1 = MPI_Wtime();
-    t_interior += t1 - t0;
+    TSTOP(t_interior);
 
-    //recv halos and calc boundaries
-    t0 = MPI_Wtime();
+    TSTART();
     halo_exchange_finish(cells, &decomp, params.nx, halo_reqs);
-    t1 = MPI_Wtime();
-    t_halo += t1 - t0;
+    TSTOP(t_halo);
 
-    t0 = MPI_Wtime();
+    TSTART();
     if (local_ny <= 2) {
       compute_rows(params, 1, local_ny,
                    cells, tmp_cells, obstacles, &tot_u);
@@ -225,29 +168,18 @@ int main(int argc, char *argv[])
       compute_rows(params, local_ny, local_ny,
                    cells, tmp_cells, obstacles, &tot_u);
     }
-    t1 = MPI_Wtime();
-    t_boundary += t1 - t0;
+    TSTOP(t_boundary);
 
-    //reduce
-    t0 = MPI_Wtime();
+    TSTART();
     float global_tot_u;
     MPI_Allreduce(&tot_u, &global_tot_u, 1,
                   MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
     av_vels[tt] = global_tot_u * inv_fluid_cells;
-    t1 = MPI_Wtime();
-    t_reduce += t1 - t0;
+    TSTOP(t_reduce);
 
-    //swap girds
     t_speed temp = *cells;
     *cells       = *tmp_cells;
     *tmp_cells   = temp;
-
-#ifdef DEBUG
-    if (rank == 0) {
-      printf("==timestep: %d==\n", tt);
-      printf("av velocity: %.12E\n", av_vels[tt]);
-    }
-#endif
   }
 
   gettimeofday(&timstr, NULL);
@@ -269,19 +201,20 @@ int main(int argc, char *argv[])
     printf("Elapsed Compute time:\t\t\t%.6lf (s)\n", comp_toc - comp_tic);
     printf("Elapsed Collate time:\t\t\t%.6lf (s)\n", col_toc  - col_tic);
     printf("Elapsed Total time:\t\t\t%.6lf (s)\n",   tot_toc  - tot_tic);
+#ifdef PROFILE
     printf("--- Rank 0 compute breakdown ---\n");
     printf("  Accelerate:\t\t%.6lf (s)\n", t_accel);
     printf("  Halo exch:\t\t%.6lf (s)\n",  t_halo);
     printf("  Interior:\t\t%.6lf (s)\n",   t_interior);
     printf("  Boundary:\t\t%.6lf (s)\n",   t_boundary);
     printf("  Allreduce:\t\t%.6lf (s)\n",  t_reduce);
+#endif
   }
 
   finalise(&decomp, &cells, &tmp_cells, &obstacles, &av_vels);
   MPI_Finalize();
   return EXIT_SUCCESS;
 }
-
 
 void compute_decomposition(int rank, int nprocs, int ny, int nx, t_decomp *d)
 {
@@ -301,10 +234,10 @@ void compute_decomposition(int rank, int nprocs, int ny, int nx, t_decomp *d)
   d->local_fluid_cells = 0;
 
   const int buf_size = NSPEEDS * nx;
-  d->send_south = malloc(buf_size * sizeof(float));
-  d->send_north = malloc(buf_size * sizeof(float));
-  d->recv_south = malloc(buf_size * sizeof(float));
-  d->recv_north = malloc(buf_size * sizeof(float));
+  d->send_south = alloc_floats(buf_size);
+  d->send_north = alloc_floats(buf_size);
+  d->recv_south = alloc_floats(buf_size);
+  d->recv_north = alloc_floats(buf_size);
 }
 
 void free_decomposition(t_decomp *d)
@@ -391,48 +324,6 @@ void accelerate_flow(const t_param params, const t_decomp *d,
   }
 }
 
-void compute_single_col(const t_param params, int jj_lo, int jj_hi,
-                        int ii, int ii_w, int ii_e,
-                        const t_speed *cells, t_speed *tmp_cells,
-                        const int *obstacles, float *tot_u)
-{
-  const int   nx    = params.nx;
-  const float omega = params.omega;
-
-  for (int jj = jj_lo; jj <= jj_hi; ++jj)
-  {
-    const int row   = jj * nx;
-    const int row_s = (jj - 1) * nx;
-    const int row_n = (jj + 1) * nx;
-    const int idx   = row + ii;
-
-    float r0 = cells->speeds[0][idx];
-    float r1 = cells->speeds[1][row   + ii_w];
-    float r2 = cells->speeds[2][row_s + ii];
-    float r3 = cells->speeds[3][row   + ii_e];
-    float r4 = cells->speeds[4][row_n + ii];
-    float r5 = cells->speeds[5][row_s + ii_w];
-    float r6 = cells->speeds[6][row_s + ii_e];
-    float r7 = cells->speeds[7][row_n + ii_e];
-    float r8 = cells->speeds[8][row_n + ii_w];
-
-    float vel = 0.f;
-    stream_collide_cell(omega, obstacles[idx],
-                        r0,r1,r2,r3,r4,r5,r6,r7,r8,
-                        &tmp_cells->speeds[0][idx],
-                        &tmp_cells->speeds[1][idx],
-                        &tmp_cells->speeds[2][idx],
-                        &tmp_cells->speeds[3][idx],
-                        &tmp_cells->speeds[4][idx],
-                        &tmp_cells->speeds[5][idx],
-                        &tmp_cells->speeds[6][idx],
-                        &tmp_cells->speeds[7][idx],
-                        &tmp_cells->speeds[8][idx],
-                        &vel);
-    *tot_u += vel;
-  }
-}
-
 void compute_rows(const t_param params, int jj_lo, int jj_hi,
                   const t_speed *cells, t_speed *tmp_cells,
                   const int *obstacles, float *tot_u)
@@ -460,15 +351,13 @@ void compute_rows(const t_param params, int jj_lo, int jj_hi,
   float * restrict out7 = tmp_cells->speeds[7];
   float * restrict out8 = tmp_cells->speeds[8];
 
+  const int * restrict obs = obstacles;
+
+  const float w0c = 4.f / 9.f;
+  const float w1c = 1.f / 9.f;
+  const float w2c = 1.f / 36.f;
+
   float acc_u = 0.f;
-
-  compute_single_col(params, jj_lo, jj_hi, 0, nx - 1, 1,
-                     cells, tmp_cells, obstacles, &acc_u);
-
-  if (nx > 1) {
-    compute_single_col(params, jj_lo, jj_hi, nx - 1, nx - 2, 0,
-                       cells, tmp_cells, obstacles, &acc_u);
-  }
 
   for (int jj = jj_lo; jj <= jj_hi; ++jj)
   {
@@ -476,9 +365,73 @@ void compute_rows(const t_param params, int jj_lo, int jj_hi,
     const int row_s = (jj - 1) * nx;
     const int row_n = (jj + 1) * nx;
 
+    {
+      const int idx = row;
+      const float r0=c0[idx],     r1=c1[row+nx-1],  r2=c2[row_s],
+                  r3=c3[row+1],   r4=c4[row_n],     r5=c5[row_s+nx-1],
+                  r6=c6[row_s+1], r7=c7[row_n+1],   r8=c8[row_n+nx-1];
+
+      const float rho = fmaxf(r0+r1+r2+r3+r4+r5+r6+r7+r8, 1e-20f);
+      const float inv_rho = 1.f / rho;
+      const float ux = (r1+r5+r8-(r3+r6+r7))*inv_rho;
+      const float uy = (r2+r5+r6-(r4+r7+r8))*inv_rho;
+      const float u2 = ux*ux+uy*uy;
+      const float com = 1.f-1.5f*u2;
+
+      if (obs[idx]) {
+        out0[idx]=r0; out1[idx]=r3; out2[idx]=r4; out3[idx]=r1; out4[idx]=r2;
+        out5[idx]=r7; out6[idx]=r8; out7[idx]=r5; out8[idx]=r6;
+      } else {
+        float uxy;
+        out0[idx]=r0+omega*(w0c*rho*com-r0);
+        out1[idx]=r1+omega*(w1c*rho*(com+3.f*ux+4.5f*ux*ux)-r1);
+        out2[idx]=r2+omega*(w1c*rho*(com+3.f*uy+4.5f*uy*uy)-r2);
+        out3[idx]=r3+omega*(w1c*rho*(com-3.f*ux+4.5f*ux*ux)-r3);
+        out4[idx]=r4+omega*(w1c*rho*(com-3.f*uy+4.5f*uy*uy)-r4);
+        uxy= ux+uy; out5[idx]=r5+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r5);
+        uxy=-ux+uy; out6[idx]=r6+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r6);
+        uxy=-ux-uy; out7[idx]=r7+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r7);
+        uxy= ux-uy; out8[idx]=r8+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r8);
+        acc_u += sqrtf(u2);
+      }
+    }
+
+    if (nx > 1)
+    {
+      const int ii=nx-1, idx=row+ii;
+      const float r0=c0[idx],     r1=c1[row+ii-1],  r2=c2[row_s+ii],
+                  r3=c3[row],     r4=c4[row_n+ii],  r5=c5[row_s+ii-1],
+                  r6=c6[row_s],   r7=c7[row_n],     r8=c8[row_n+ii-1];
+
+      const float rho = fmaxf(r0+r1+r2+r3+r4+r5+r6+r7+r8, 1e-20f);
+      const float inv_rho = 1.f / rho;
+      const float ux = (r1+r5+r8-(r3+r6+r7))*inv_rho;
+      const float uy = (r2+r5+r6-(r4+r7+r8))*inv_rho;
+      const float u2 = ux*ux+uy*uy;
+      const float com = 1.f-1.5f*u2;
+
+      if (obs[idx]) {
+        out0[idx]=r0; out1[idx]=r3; out2[idx]=r4; out3[idx]=r1; out4[idx]=r2;
+        out5[idx]=r7; out6[idx]=r8; out7[idx]=r5; out8[idx]=r6;
+      } else {
+        float uxy;
+        out0[idx]=r0+omega*(w0c*rho*com-r0);
+        out1[idx]=r1+omega*(w1c*rho*(com+3.f*ux+4.5f*ux*ux)-r1);
+        out2[idx]=r2+omega*(w1c*rho*(com+3.f*uy+4.5f*uy*uy)-r2);
+        out3[idx]=r3+omega*(w1c*rho*(com-3.f*ux+4.5f*ux*ux)-r3);
+        out4[idx]=r4+omega*(w1c*rho*(com-3.f*uy+4.5f*uy*uy)-r4);
+        uxy= ux+uy; out5[idx]=r5+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r5);
+        uxy=-ux+uy; out6[idx]=r6+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r6);
+        uxy=-ux-uy; out7[idx]=r7+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r7);
+        uxy= ux-uy; out8[idx]=r8+omega*(w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy)-r8);
+        acc_u += sqrtf(u2);
+      }
+    }
+
+    #pragma omp simd reduction(+:acc_u)
     for (int ii = 1; ii < nx - 1; ++ii)
     {
-      const int idx  = row + ii;
+      const int idx = row + ii;
 
       const float r0 = c0[idx];
       const float r1 = c1[row   + ii - 1];
@@ -490,19 +443,49 @@ void compute_rows(const t_param params, int jj_lo, int jj_hi,
       const float r7 = c7[row_n + ii + 1];
       const float r8 = c8[row_n + ii - 1];
 
-      float vel = 0.f;
-      stream_collide_cell(omega, obstacles[idx],
-                          r0,r1,r2,r3,r4,r5,r6,r7,r8,
-                          &out0[idx],&out1[idx],&out2[idx],
-                          &out3[idx],&out4[idx],&out5[idx],
-                          &out6[idx],&out7[idx],&out8[idx],
-                          &vel);
-      acc_u += vel;
+      const float rho = fmaxf(r0+r1+r2+r3+r4+r5+r6+r7+r8, 1e-20f);
+      const float inv_rho = 1.f / rho;
+      const float ux = (r1+r5+r8 - (r3+r6+r7)) * inv_rho;
+      const float uy = (r2+r5+r6 - (r4+r7+r8)) * inv_rho;
+      const float u2 = ux*ux + uy*uy;
+      const float com = 1.f - 1.5f * u2;
+
+      float feq0 = w0c*rho*com;
+      float feq1 = w1c*rho*(com + 3.f*ux  + 4.5f*ux*ux);
+      float feq2 = w1c*rho*(com + 3.f*uy  + 4.5f*uy*uy);
+      float feq3 = w1c*rho*(com - 3.f*ux  + 4.5f*ux*ux);
+      float feq4 = w1c*rho*(com - 3.f*uy  + 4.5f*uy*uy);
+      float uxy;
+      uxy= ux+uy; float feq5 = w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy);
+      uxy=-ux+uy; float feq6 = w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy);
+      uxy=-ux-uy; float feq7 = w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy);
+      uxy= ux-uy; float feq8 = w2c*rho*(com+3.f*uxy+4.5f*uxy*uxy);
+
+      float col0=r0+omega*(feq0-r0), col1=r1+omega*(feq1-r1);
+      float col2=r2+omega*(feq2-r2), col3=r3+omega*(feq3-r3);
+      float col4=r4+omega*(feq4-r4), col5=r5+omega*(feq5-r5);
+      float col6=r6+omega*(feq6-r6), col7=r7+omega*(feq7-r7);
+      float col8=r8+omega*(feq8-r8);
+
+      const float ob = (float)obs[idx];
+
+      out0[idx] = col0 + ob * (r0 - col0);
+      out1[idx] = col1 + ob * (r3 - col1);
+      out2[idx] = col2 + ob * (r4 - col2);
+      out3[idx] = col3 + ob * (r1 - col3);
+      out4[idx] = col4 + ob * (r2 - col4);
+      out5[idx] = col5 + ob * (r7 - col5);
+      out6[idx] = col6 + ob * (r8 - col6);
+      out7[idx] = col7 + ob * (r5 - col7);
+      out8[idx] = col8 + ob * (r6 - col8);
+
+      acc_u += (1.f - ob) * sqrtf(u2);
     }
   }
 
   *tot_u += acc_u;
 }
+
 
 void initialise(const char *paramfile, const char *obstaclefile,
                 t_param *params, t_decomp *decomp,
@@ -534,15 +517,14 @@ void initialise(const char *paramfile, const char *obstaclefile,
   const int nx         = params->nx;
   const int local_ny   = decomp->local_ny;
   const int alloc_size = decomp->alloc_rows * nx;
-
   t_speed *cells     = malloc(sizeof(t_speed));
   t_speed *tmp_cells = malloc(sizeof(t_speed));
   if (!cells || !tmp_cells)
     die("cannot allocate t_speed structs", __LINE__, __FILE__);
 
   for (int k = 0; k < NSPEEDS; k++) {
-    cells->speeds[k]     = calloc(alloc_size, sizeof(float));
-    tmp_cells->speeds[k] = calloc(alloc_size, sizeof(float));
+    cells->speeds[k]     = alloc_floats(alloc_size);
+    tmp_cells->speeds[k] = alloc_floats(alloc_size);
     if (!cells->speeds[k] || !tmp_cells->speeds[k])
       die("cannot allocate speed arrays", __LINE__, __FILE__);
   }
@@ -736,6 +718,7 @@ float calc_reynolds(const t_param params, const t_decomp *d,
   return 0.f;
 }
 
+
 void finalise(t_decomp *decomp, t_speed **cells_ptr, t_speed **tmp_cells_ptr,
               int **obstacles_ptr, float **av_vels_ptr)
 {
@@ -749,6 +732,7 @@ void finalise(t_decomp *decomp, t_speed **cells_ptr, t_speed **tmp_cells_ptr,
   free(*obstacles_ptr); *obstacles_ptr = NULL;
   free(*av_vels_ptr);   *av_vels_ptr   = NULL;
 }
+
 
 void die(const char *msg, const int line, const char *file)
 {
