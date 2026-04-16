@@ -119,7 +119,6 @@ int main(int argc, char *argv[])
   CUDA_CHECK(cudaMalloc(&d_vel, n_cells * sizeof(float)));
   CUDA_CHECK(cudaMemset(d_vel, 0, n_cells * sizeof(float)));
 
-  /* launch configuration */
   dim3 block2d(BLOCK_X, BLOCK_Y);
   dim3 grid2d((nx + BLOCK_X - 1) / BLOCK_X,
               (ny + BLOCK_Y - 1) / BLOCK_Y);
